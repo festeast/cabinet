@@ -55,34 +55,51 @@ export function styleStats(text) {
   }
 }
 
-// Из книги достаём главу по номеру («глава 5») или самые подходящие фрагменты по словам вопроса.
-export function pickPassages(docs, query) {
+export const stemsOf = (q) => [...new Set((String(q).toLowerCase().match(/[a-zа-яё]{4,}/g) || []).map((w) => w.slice(0, 5)))]
+// Оценка совпадения: важнее, сколько РАЗНЫХ слов вопроса нашлось, чем сколько раз встретилось одно имя.
+export function score(text, stems) {
+  const l = text.toLowerCase()
+  let kinds = 0, tot = 0
+  for (const w of stems) { const k = l.split(w).length - 1; if (k) { kinds++; tot += Math.min(k, 4) } }
+  return kinds * 3 + tot
+}
+
+// Из книг достаём главу по номеру («глава 5») или самые подходящие фрагменты по словам вопроса.
+// docs[0] — книга в работе, остальные — книги того же цикла: поиск идёт по всем сразу.
+export function pickPassages(docs, query, limit = 16000) {
   const used = []
   let out = ''
   const num = query.match(/глав\S*\s*(?:№\s*)?(\d+)/i)
-  const stems = [...new Set((query.toLowerCase().match(/[a-zа-яё]{4,}/g) || []).map((w) => w.slice(0, 5)))]
-  for (const d of docs) {
-    const ch = chaptersOf(d.text)
-    if (num && ch.length) {
-      const n = +num[1]
-      let i = ch.findIndex((c) => new RegExp(`(^|\\D)${n}(\\D|$)`).test(c.title))
-      if (i < 0 && n <= ch.length) i = n - 1
-      if (i >= 0) {
-        const a = ch[i].at, b = ch[i + 1]?.at ?? d.text.length
-        out += `\n--- ${d.name}, ${ch[i].title} ---\n${d.text.slice(a, Math.min(b, a + 6000))}\n`
-        used.push(`${d.name}: ${ch[i].title}`)
-        continue
-      }
+  const stems = stemsOf(query)
+  const d0 = docs[0]
+  if (num && d0) {
+    const ch = chaptersOf(d0.text), n = +num[1]
+    let i = ch.findIndex((c) => new RegExp(`(^|\\D)${n}(\\D|$)`).test(c.title))
+    if (i < 0 && n <= ch.length) i = n - 1
+    if (i >= 0) {
+      const a = ch[i].at, b = ch[i + 1]?.at ?? d0.text.length
+      out += `\n--- ${d0.name}, ${ch[i].title} ---\n${d0.text.slice(a, Math.min(b, a + 9000))}\n`
+      used.push(`${d0.name}: ${ch[i].title}`)
     }
-    const size = 1500, scored = []
-    for (let p = 0; p < d.text.length; p += size) {
-      const t = d.text.slice(p, p + size), l = t.toLowerCase()
-      scored.push({ p, t, s: stems.reduce((n, w) => n + (l.split(w).length - 1), 0) })
-    }
-    const top = scored.filter((x) => x.s > 0).sort((a, b) => b.s - a.s).slice(0, 3).sort((a, b) => a.p - b.p)
-    const use = top.length ? top : scored.slice(0, 2)
-    out += `\n--- ${d.name} ---\n${use.map((x) => x.t).join('\n[…]\n')}\n`
-    used.push(`${d.name}: ${top.length ? `фрагментов найдено: ${top.length}` : 'начало текста'}`)
   }
-  return { text: out.slice(0, 14000), used }
+  const size = 2000, scored = []
+  docs.forEach((d, di) => {
+    for (let p = 0; p < d.text.length; p += size) {
+      const t = d.text.slice(p, p + size)
+      scored.push({ di, p, t, s: stems.length ? score(t, stems) + (di === 0 ? 1 : 0) : 0 })
+    }
+  })
+  const top = scored.filter((x) => x.s > 3).sort((a, b) => b.s - a.s).slice(0, 6).sort((a, b) => a.di - b.di || a.p - b.p)
+  if (top.length) {
+    for (const di of [...new Set(top.map((x) => x.di))]) {
+      const xs = top.filter((x) => x.di === di)
+      out += `\n--- ${docs[di].name} ---\n${xs.map((x) => x.t).join('\n[…]\n')}\n`
+      used.push(`${docs[di].name}: фрагментов найдено: ${xs.length}`)
+    }
+  } else if (!used.length && d0) {
+    // Ничего не нашлось: даём конец книги в работе — там, где сюжет остановился.
+    out += `\n--- ${d0.name}, конец текста ---\n${d0.text.slice(-4000)}\n`
+    used.push(`${d0.name}: конец текста`)
+  }
+  return { text: out.slice(0, limit), used }
 }

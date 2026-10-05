@@ -140,3 +140,20 @@ body[data-cab-theme=scifi]{background:radial-gradient(circle at 75% 15%,rgba(43,
 body[data-cab-theme=history]{background:radial-gradient(circle at 80% 15%,rgba(201,154,59,.35),transparent 42%),linear-gradient(170deg,#241a10,#3a2a18)}
 body[data-cab-theme=noir]{background:radial-gradient(circle at 85% 12%,rgba(255,70,70,.22),transparent 38%),linear-gradient(180deg,#0b0b0f,#1a1a22)}
 body[data-cab-theme=custom]{background:linear-gradient(rgba(6,18,31,.55),rgba(6,18,31,.82)),var(--bgimg,none) center/cover fixed,#06121f}
+/* Циклы, разбор глав, оценка реплик */
+.series{border:1px solid var(--line);border-radius:.9rem;padding:.7rem .8rem;gap:.5rem;background:var(--panel)}
+.series > .row b{display:block}
+.series > .row small{display:block;color:var(--muted)}
+.series .doc{background:transparent}
+.chs{display:grid;gap:.6rem;margin:0;padding-left:1.4rem;max-height:32rem;overflow:auto}
+.chs p{margin:.2rem 0}
+.chs small,.chs i{color:var(--muted)}
+.modes{border:0;padding:0;margin:0;flex-wrap:wrap}
+.modes legend{padding:0;margin-bottom:.3rem}
+input.sm{width:9rem;padding:.2rem .4rem;font-size:.85em}
+.fb{gap:.3rem;margin-top:.3rem}
+@media (max-width:560px){
+  .doc > .row.top,.series > .row.top{flex-wrap:wrap}
+  .doc > .row.top > .grow,.series > .row.top > .grow{flex:1 1 calc(100% - 2.5rem);min-width:0}
+  .series > .row.top > .grow{flex-basis:100%}
+}

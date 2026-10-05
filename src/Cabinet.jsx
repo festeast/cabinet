@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import './cabinet.css'
 import { ls, docGet, docPut, docDel } from './lib/store'
 import * as ai from './lib/ai'
-import { buildContext } from './lib/context'
-import { pickPassages } from './lib/text'
-import { bibleKey, studyBook } from './lib/bible'
+import { buildContext, seriesDocs } from './lib/context'
+import { pickPassages, cut } from './lib/text'
+import { bibleKey, seriesKey, studyBook, studyCycle } from './lib/bible'
+import { BASE } from './lib/agents'
 import Home from './views/Home'
 import Library from './views/Library'
 import Table from './views/Table'
@@ -39,6 +40,7 @@ export default function Cabinet() {
   const [theme, setTheme] = useState(() => ls.get('cab_theme', 'aurora'))
   const [lib, setLib] = useState(() => ls.get('cab_lib', []))
   const [bibles, setBibles] = useState({})
+  const [series, setSeries] = useState({})
   const [notes, setNotes] = useState(() => ls.get('cab_notes', ''))
   const [taste, setTaste] = useState(() => ls.get('cab_taste', { picks: [], skips: [], hc: {}, samples: [] }))
   const [activeId, setActiveId] = useState(() => ls.get('cab_active', ''))
@@ -46,6 +48,7 @@ export default function Cabinet() {
   const [studyErr, setStudyErr] = useState('')
   const [, setTick] = useState(0)
   const jobCtl = useRef(null)
+  const distilling = useRef(false)
   const capEff = capMan === 'auto' ? cap : +capMan
   const active = lib.some((d) => d.id === activeId) ? activeId : lib[0]?.id || ''
 
@@ -74,38 +77,87 @@ export default function Cabinet() {
     ;(async () => {
       const m = {}
       for (const d of lib) { const b = await docGet(bibleKey(d.id)).catch(() => null); if (b) m[d.id] = b }
-      if (!off) setBibles(m)
+      const sm = {}
+      for (const n of new Set(lib.map((d) => d.series).filter(Boolean))) { const b = await docGet(seriesKey(n)).catch(() => null); if (b) sm[n] = b }
+      if (!off) { setBibles(m); setSeries(sm) }
     })()
     return () => { off = true }
   }, [ids]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = (prompt, o = {}) => ai.complete(key, prompt, { models: models.free, model, paid: { on: usePaid, id: paidModel }, cap: capEff, ...o })
-  // Контекст для помощников: библия активной книги + стиль + вкус (+ найденные фрагменты текста).
+  // Контекст для помощников: библия цикла и книги, связанные главы, стиль, вкус и уроки
+  // (+ фрагменты текста, найденные по всем книгам цикла).
   async function ctx(query = '', o = {}) {
     const book = o.book || active
     let passages = '', used = []
     const d = lib.find((x) => x.id === book)
     if (o.passages !== false && d) {
-      const text = await docGet(d.id).catch(() => null)
-      if (text) { const r = pickPassages([{ name: d.name, text }], query); passages = r.text; used = r.used }
+      const books = [d, ...seriesDocs(lib, d).filter((x) => x.id !== d.id)]
+      const texts = []
+      for (const x of books) { const text = await docGet(x.id).catch(() => null); if (text) texts.push({ name: x.name, text }) }
+      if (texts.length) { const r = pickPassages(texts, query); passages = r.text; used = r.used }
     }
-    return { text: buildContext({ docs: lib, bibles, activeId: book, notes, taste, passages, withSample: !!o.sample }), used }
+    return { text: buildContext({ docs: lib, bibles, series, activeId: book, notes, taste, passages, query, withSample: !!o.sample }), used }
   }
-  const learn = ({ picked, skipped = [] }) => setTaste((t) => {
-    const n = { picks: [...(t.picks || [])], skips: [...(t.skips || [])], hc: { ...(t.hc || {}) }, samples: t.samples || [] }
+  const saveTaste = (fn) => setTaste((t) => { const n = fn(t); ls.set('cab_taste', n); return n })
+  const learn = ({ picked, skipped = [] }) => saveTaste((t) => {
+    const n = { ...t, picks: [...(t.picks || [])], skips: [...(t.skips || [])], hc: { ...(t.hc || {}) } }
     if (picked) { n.picks.push({ h: picked.by, t: picked.text }); n.hc[picked.by] = (n.hc[picked.by] || 0) + 1 }
     skipped.forEach((s) => n.skips.push({ h: s.by, t: s.text }))
-    n.picks = n.picks.slice(-40); n.skips = n.skips.slice(-40)
-    ls.set('cab_taste', n)
+    n.picks = n.picks.slice(-80); n.skips = n.skips.slice(-80)
+    n.fresh = (t.fresh || 0) + (picked ? 1 : 0) + skipped.length
     return n
   })
-  const addSample = (text) => setTaste((t) => {
-    const n = { ...t, samples: [...(t.samples || []), text.slice(0, 1500)].slice(-3) }
-    ls.set('cab_taste', n)
-    return n
-  })
+  const addSample = (text) => saveTaste((t) => ({ ...t, samples: [...(t.samples || []), text.slice(0, 2500)].slice(-3) }))
+  const setLessons = (lessons) => saveTaste((t) => ({ ...t, lessons }))
+  const setRules = (rules) => saveTaste((t) => ({ ...t, rules }))
+
+  // Каждые 10 новых выборов помощники сами выводят из них правила вкуса автора.
+  useEffect(() => {
+    if (!key || distilling.current || (taste.fresh || 0) < 10 || (taste.picks || []).length < 5) return
+    distilling.current = true
+    const picks = taste.picks.slice(-40).map((p) => `+ ${cut(p.t, 200)}`).join('\n'), skips = (taste.skips || []).slice(-30).map((p) => `– ${cut(p.t, 160)}`).join('\n')
+    run(`Ниже идеи, которые автор книги выбрал (+), и которые отверг (–). Выведи 6-8 точных правил его вкуса: какие ходы, тон, темп, типы поворотов и героев ему нравятся, а какие нет. Учитывай прежние правила, уточняй их, а не повторяй. Каждое правило с новой строки, начиная с «- », до 160 слов всего, без вступлений.\n\n[Прежние правила]\n${taste.rules || 'нет'}\n[Выбрано]\n${picks}\n[Отвергнуто]\n${skips || 'нет'}`, { system: BASE, temperature: 0.3 })
+      .then((t) => { if (t.trim()) saveTaste((x) => ({ ...x, rules: t.trim(), fresh: 0 })) })
+      .catch(() => {})
+      .finally(() => { distilling.current = false })
+  }, [taste.fresh, key]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Учимся на правках: сравниваем черновик ИИ с тем, что автор оставил, и сохраняем уроки.
+  async function learnEdits(aiText, final) {
+    const pa = (t) => t.split(/\n+/).map((x) => x.trim()).filter(Boolean)
+    const A = pa(aiText), F = pa(final), sa = new Set(A), sf = new Set(F)
+    const gone = A.filter((x) => !sf.has(x)), added = F.filter((x) => !sa.has(x))
+    if (gone.join('').length + added.join('').length < 200) return 0
+    const t = await run(`Сравни абзацы черновика ИИ, которые автор убрал или переписал, с абзацами, которые он написал вместо них. Сформулируй до 6 конкретных уроков для соавтора: что автор меняет в лексике, длине фраз, диалогах, подаче героев, что вычёркивает и что добавляет. Каждый урок одной строкой, начиная с «- », без вступлений.\n\n[Было у ИИ]\n${cut(gone.join('\n'), 7000)}\n\n[Стало у автора]\n${cut(added.join('\n'), 7000)}`, { system: BASE, temperature: 0.3 })
+    const ls2 = t.split('\n').map((l) => l.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim()).filter((l) => l.length > 10).slice(0, 6)
+    if (ls2.length) saveTaste((x) => ({ ...x, lessons: [...new Set([...(x.lessons || []), ...ls2])].slice(-30) }))
+    return ls2.length
+  }
 
   async function addDoc(meta, text) { await docPut(meta.id, text); setLib((l) => [meta, ...l]); setActiveId((a) => a || meta.id) }
+  // Папка добавляется целиком, книги цикла — по порядку.
+  async function addDocs(list) {
+    for (const { meta, text } of list) await docPut(meta.id, text)
+    setLib((l) => [...list.map((x) => x.meta), ...l]); setActiveId((a) => a || list[list.length - 1]?.meta.id || '')
+  }
+  async function renameSeries(from, to) {
+    const n = to.trim()
+    if (!n || n === from) return
+    const sb = await docGet(seriesKey(from)).catch(() => null)
+    if (sb) { await docPut(seriesKey(n), { ...sb, name: n }).catch(() => {}); await docDel(seriesKey(from)).catch(() => {}) }
+    setLib((l) => l.map((d) => (d.series === from ? { ...d, series: n } : d)))
+  }
+  const setDocSeries = (id, name) => setLib((l) => {
+    const n = name.trim(), max = Math.max(-1, ...l.filter((d) => d.series === n).map((d) => d.order ?? 0))
+    return l.map((d) => (d.id === id ? { ...d, series: n || undefined, order: max + 1 } : d))
+  })
+  const moveDoc = (id, dir) => setLib((l) => {
+    const d = l.find((x) => x.id === id), g = seriesDocs(l, d), i = g.indexOf(d), j = i + dir
+    if (i < 0 || j < 0 || j >= g.length) return l
+    const ord = new Map(g.map((x, k) => [x.id, k])); ord.set(g[i].id, j); ord.set(g[j].id, i)
+    return l.map((x) => (ord.has(x.id) ? { ...x, order: ord.get(x.id) } : x))
+  })
   async function removeDoc(id) {
     if (!confirm('Убрать из библиотеки вместе с изученным?')) return
     await docDel(id).catch(() => {}); await docDel(bibleKey(id)).catch(() => {})
@@ -114,26 +166,38 @@ export default function Cabinet() {
   const toggleDoc = (id) => setLib((l) => l.map((d) => (d.id === id ? { ...d, on: d.on === false } : d)))
   const setBible = (id, b) => setBibles((m) => ({ ...m, [id]: b }))
   const saveBible = (id, b) => { setBible(id, b); docPut(bibleKey(id), b).catch(() => {}) }
+  const saveSeries = (n, b) => { setSeries((m) => ({ ...m, [n]: b })); docPut(seriesKey(n), b).catch(() => {}) }
 
-  async function study(doc) {
+  async function studyOne(doc, ac, o = {}) {
+    const text = await docGet(doc.id)
+    if (!text) throw new Error(`Текст книги «${doc.name}» не найден в библиотеке.`)
+    const b = await studyBook({ doc, text, fresh: o.fresh, signal: ac.signal, run: (p, x) => run(p, { ...x, signal: ac.signal }), onStep: (s) => { setJob((j) => ({ ...j, book: doc.id, phase: s.phase, i: s.i, n: s.n })); setBible(doc.id, s.bible) } })
+    setBible(doc.id, b)
+    return b
+  }
+  async function guard(j, fn) {
     if (job) return
     setStudyErr('')
     const ac = new AbortController(); jobCtl.current = ac
-    setJob({ id: doc.id, phase: 'chapters', i: 0, n: 0 })
-    try {
-      const text = await docGet(doc.id)
-      if (!text) throw new Error('Текст книги не найден в библиотеке.')
-      const b = await studyBook({ doc, text, signal: ac.signal, run: (p, o) => run(p, { ...o, signal: ac.signal }), onStep: (s) => { setJob({ id: doc.id, phase: s.phase, i: s.i, n: s.n }); setBible(doc.id, s.bible) } })
-      setBible(doc.id, b)
-    } catch (e) {
+    setJob({ phase: 'chapters', i: 0, n: 0, ...j })
+    try { await fn(ac) } catch (e) {
       if (e.name !== 'AbortError') setStudyErr(`${e.message} Прогресс сохранён: нажмите «Продолжить изучение», когда лимит вернётся.`)
-      const b = await docGet(bibleKey(doc.id)).catch(() => null)
-      if (b) setBible(doc.id, b)
+      if (j.book) { const b = await docGet(bibleKey(j.book)).catch(() => null); if (b) setBible(j.book, b) }
     }
     jobCtl.current = null; setJob(null)
   }
+  const study = (doc, o = {}) => guard({ id: doc.id, book: doc.id }, (ac) => studyOne(doc, ac, o))
+  // Весь цикл: каждая книга подробно по порядку, затем сводная библия цикла и проверка несостыковок между книгами.
+  const studySeries = (name, o = {}) => guard({ id: `series:${name}`, series: name }, async (ac) => {
+    const docs = seriesDocs(lib, lib.find((d) => d.series === name))
+    const bs = {}
+    for (const d of docs) bs[d.id] = await studyOne(d, ac, o)
+    setJob((j) => ({ ...j, book: '', phase: 'series' }))
+    const sb = await studyCycle({ name, docs, bibles: bs, signal: ac.signal, run: (p, x) => run(p, { ...x, signal: ac.signal }), onStep: (s) => setJob((j) => ({ ...j, phase: s.phase })) })
+    setSeries((m) => ({ ...m, [name]: sb }))
+  })
 
-  const app = { key, run, ctx, learn, addSample, lib, bibles, notes, setNotes, active, setActive: setActiveId, addDoc, removeDoc, toggleDoc, saveBible, study, stopStudy: () => jobCtl.current?.abort(), job, studyErr, capEff }
+  const app = { key, run, ctx, learn, addSample, learnEdits, setLessons, setRules, taste, lib, bibles, series, notes, setNotes, active, setActive: setActiveId, addDoc, addDocs, removeDoc, toggleDoc, renameSeries, setDocSeries, moveDoc, saveBible, saveSeries, study, studySeries, stopStudy: () => jobCtl.current?.abort(), job, studyErr, capEff }
   const go = (view, arg) => setNav({ view, arg })
 
   function login(e) {

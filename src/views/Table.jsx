@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { HELPERS, who, RULE, INTRO, SUM } from '../lib/agents'
+import { HELPERS, who, BASE, RULE, INTRO, SUM } from '../lib/agents'
 import { ls, uid } from '../lib/store'
 import { short } from '../lib/ai'
 import Av from './Av'
@@ -32,14 +32,15 @@ export default function Table({ app, arg, toChapter }) {
     const upd = (fn) => setSessions((s) => s.map((x) => (x.id === id ? { ...x, turns: fn(x.turns) } : x)))
     const set = (i, patch) => { Object.assign(tr[i], patch); upd((ts) => { const a = [...ts]; a[i] = { ...a[i], ...patch }; return a }) }
     const add = (t) => { tr.push({ ...t }); upd((ts) => [...ts, { ...t }]); return tr.length - 1 }
-    const say = async (w, kind, instr, upto) => {
+    const say = async (w, kind, instr, upto, temperature = 0.8) => {
       const i = add({ who: w, kind, text: '' })
       setSpeaking(upto !== undefined ? 'all' : w)
       const u = upto ?? i
       const hist = tr.slice(Math.max(0, u - 16), u).filter((t) => t.kind !== 'src').map((t) => `${who(t.who).n}: ${t.text.slice(0, 600)}`).join('\n')
-      const prompt = `${instr}\n\n${context}\n\n[Ход обсуждения]\n${hist}\n\nТвоя реплика (${who(w).n}):`
+      // Роль и правила — в system, материалы книги и ход обсуждения — в запросе.
+      const prompt = `${context}\n\n[Ход обсуждения]\n${hist}\n\nТвоя реплика (${who(w).n}):`
       try {
-        const t = await app.run(prompt, { signal: ac.signal, onText: (x) => set(i, { text: x }), onModel: (m) => set(i, { m }) })
+        const t = await app.run(prompt, { system: `${BASE}\n${instr}`, temperature, signal: ac.signal, onText: (x) => set(i, { text: x }), onModel: (m) => set(i, { m }) })
         if (!t.trim()) throw new Error('Модель ничего не ответила.')
       } catch (e) {
         if (!tr[i].text) set(i, { text: e.name === 'AbortError' ? 'Остановлено' : `Не смог ответить: ${e.message || 'ошибка'}` })
@@ -51,7 +52,7 @@ export default function Table({ app, arg, toChapter }) {
       const c = await app.ctx(question, { passages: true })
       context = c.text
       if (c.used.length) add({ who: 'core', kind: 'src', text: `Из книги взято: ${c.used.join('; ')}` })
-      await say('core', 'mod', INTRO)
+      await say('core', 'mod', INTRO, undefined, 0.4)
       if (fast) {
         const upto = tr.length
         const res = await Promise.allSettled(ids.map((a) => say(a.id, 'adv', `${a.p}\n${RULE}`, upto)))
@@ -59,7 +60,7 @@ export default function Table({ app, arg, toChapter }) {
         if (bad && ac.signal.aborted) throw bad.reason
         if (bad) setErr(bad.reason.message)
       } else for (const a of ids) await say(a.id, 'adv', `${a.p}\n${RULE}`)
-      await say('core', 'sum', SUM)
+      await say('core', 'sum', SUM, undefined, 0.4)
     } catch (e) { if (e.name !== 'AbortError') setErr(e.message || 'Сбой сети') }
     setSpeaking(''); setBusy(false)
   }
@@ -77,6 +78,14 @@ export default function Table({ app, arg, toChapter }) {
     const v = q.trim()
     if (!v || busy || !pick.length) return
     setQ(''); runRound(cur.id, v, cur)
+  }
+  // Оценка реплики учит помощников так же, как выбор хода в мастерской главы.
+  function rate(i, v) {
+    const t = cur.turns[i]
+    if (!t || t.fb) return
+    const o = { by: t.who, text: t.text.slice(0, 400) }
+    app.learn(v > 0 ? { picked: o } : { skipped: [o] })
+    setSessions((s) => s.map((x) => (x.id === cur.id ? { ...x, turns: x.turns.map((y, k) => (k === i ? { ...y, fb: v } : y)) } : x)))
   }
   const del = (id) => { if (confirm('Удалить это обсуждение?')) setSessions((s) => s.filter((x) => x.id !== id)) }
 
@@ -131,6 +140,12 @@ export default function Table({ app, arg, toChapter }) {
             <article key={i} className={`card ${t.kind}`} style={{ '--c': w.c }}>
               <h3><Av w={w} />{w.n}{t.kind === 'sum' && ': итог'}{t.m && <small className="mdl">{short(t.m)}</small>}</h3>
               <p>{t.text}{live && <span className="cur" />}</p>
+              {t.kind === 'adv' && !live && t.text && (
+                <div className="row fb">
+                  <button className="ghost sm" aria-pressed={t.fb === 1} disabled={!!t.fb} onClick={() => rate(i, 1)} title="Полезно: помощники запомнят, что вам такое нравится">👍</button>
+                  <button className="ghost sm" aria-pressed={t.fb === -1} disabled={!!t.fb} onClick={() => rate(i, -1)} title="Мимо: помощники запомнят, что так не надо">👎</button>
+                </div>
+              )}
               {t.kind === 'sum' && !busy && t.text && <button className="ghost sm" onClick={() => toChapter({ brief: `${cur.turns.find((x) => x.kind === 'q')?.text || cur.title}\n\nИтог обсуждения: ${t.text}` })}>Взять в новую главу</button>}
             </article>
           )

@@ -29,16 +29,16 @@ function note(id, ok, ms) {
 }
 
 export async function loadModels() {
-  const c = ls.get('cab_models', null)
+  const c = ls.get('cab_models2', null)
   if (c && Date.now() - c.t < 6 * 3600e3) return c
   try {
     const j = await (await fetch(`${API}/models`)).json()
     const data = j.data || []
-    const free = data.filter((m) => m.id.endsWith(':free')).sort((a, b) => (b.context_length || 0) - (a.context_length || 0)).map((m) => ({ id: m.id, name: m.name || m.id }))
+    const free = data.filter((m) => m.id.endsWith(':free')).sort((a, b) => (b.context_length || 0) - (a.context_length || 0)).map((m) => ({ id: m.id, name: m.name || m.id, ctx: m.context_length || 0 }))
     const paid = data.filter((m) => !m.id.endsWith(':free') && +m.pricing?.prompt > 0 && +m.pricing?.completion > 0 && (m.context_length || 0) >= 16000)
-      .map((m) => ({ id: m.id, name: m.name || m.id, c: (+m.pricing.prompt + +m.pricing.completion) * 1e6 })).sort((a, b) => a.c - b.c).slice(0, 15)
+      .map((m) => ({ id: m.id, name: m.name || m.id, ctx: m.context_length || 0, c: (+m.pricing.prompt + +m.pricing.completion) * 1e6 })).sort((a, b) => a.c - b.c).slice(0, 15)
     const v = { t: Date.now(), free, paid }
-    ls.set('cab_models', v)
+    ls.set('cab_models2', v)
     return v
   } catch (e) { if (c) return c; throw e }
 }
@@ -50,11 +50,14 @@ export async function loadCap(key) {
   } catch { return 50 }
 }
 
-async function streamRaw(key, model, prompt, onText, signal) {
+// Инструкция роли идёт отдельным system-сообщением: модели держат её заметно лучше, чем текст в общем потоке.
+async function streamRaw(key, model, prompt, onText, signal, gen = {}) {
+  const messages = [...(gen.system ? [{ role: 'system', content: gen.system }] : []), { role: 'user', content: prompt }]
+  const extra = gen.temperature === undefined ? {} : { temperature: gen.temperature }
   const res = await fetch(`${API}/chat/completions`, {
     method: 'POST', signal,
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}`, 'HTTP-Referer': location.origin },
-    body: JSON.stringify({ model, stream: true, messages: [{ role: 'user', content: prompt }] }),
+    body: JSON.stringify({ model, stream: true, messages, ...extra }),
   })
   if (!res.ok) {
     const j = await res.json().catch(() => ({}))
@@ -79,27 +82,35 @@ async function streamRaw(key, model, prompt, onText, signal) {
   return acc
 }
 
-async function stream(key, model, prompt, onText, signal, ttf = 0) {
+async function stream(key, model, prompt, onText, signal, ttf = 0, gen = {}) {
   if (model.endsWith(':free')) bump()
   else { ls.set('cab_paidn', ls.get('cab_paidn', 0) + 1); emit() }
   const ac = new AbortController()
   const fwd = () => ac.abort()
   signal?.addEventListener('abort', fwd)
   const timer = ttf ? setTimeout(() => ac.abort(), ttf) : 0
-  try { return await streamRaw(key, model, prompt, (x) => { clearTimeout(timer); onText(x) }, ac.signal) }
+  try { return await streamRaw(key, model, prompt, (x) => { clearTimeout(timer); onText(x) }, ac.signal, gen) }
   finally { clearTimeout(timer); signal?.removeEventListener('abort', fwd) }
 }
 
 let rot = 0
+// Оценка длины запроса в токенах: для русского текста примерно 2,5 знака на токен, плюс запас на ответ.
+export const tokensOf = (s) => Math.ceil((s || '').length / 2.5)
+
 // «Авто»: 4 самые быстрые модели из истории; если модель молчит дольше 15 секунд или сбоит, идём к следующей.
+// Длинные запросы (изучение глав целиком) отправляются только моделям, у которых хватает контекста.
 export async function complete(key, prompt, o = {}) {
-  const { models = [], model = 'auto', paid, cap = 50, onText = () => {}, signal, onModel = () => {} } = o
+  const { models = [], model = 'auto', paid, cap = 50, onText = () => {}, signal, onModel = () => {}, system, temperature } = o
+  const gen = { system, temperature }
   const auto = model === 'auto'
   const st = stat()
   const paidOn = paid?.on && paid.id
-  const goPaid = () => { onModel(paid.id); return stream(key, paid.id, prompt, onText, signal, 0) }
+  const goPaid = () => { onModel(paid.id); return stream(key, paid.id, prompt, onText, signal, 0, gen) }
   if (paidOn && used() >= cap) return goPaid()
-  const list = auto ? alive(models.map((m) => m.id)).sort((a, b) => (st[a]?.t ?? 6000) - (st[b]?.t ?? 6000)).slice(0, 4) : [model]
+  const need = tokensOf(prompt) + tokensOf(system) + 3000
+  const roomy = models.filter((m) => !m.ctx || m.ctx >= need)
+  const pool = (roomy.length ? roomy : models).map((m) => m.id)
+  const list = auto ? alive(pool).sort((a, b) => (st[a]?.t ?? 6000) - (st[b]?.t ?? 6000)).slice(0, 4) : [model]
   if (!list.length && paidOn) return goPaid()
   if (!list.length) throw new Error('Нет доступных бесплатных моделей: список не загрузился или все отключены.')
   const from = auto ? rot++ : 0
@@ -108,7 +119,7 @@ export async function complete(key, prompt, o = {}) {
     const id = list[(from + k) % list.length], t0 = Date.now()
     try {
       onModel(id)
-      const t = await stream(key, id, prompt, onText, signal, auto ? 15000 : 0)
+      const t = await stream(key, id, prompt, onText, signal, auto ? (need > 12000 ? 40000 : 15000) : 0, gen)
       if (!t.trim()) throw new Error('Модель ничего не ответила.')
       note(id, true, Date.now() - t0)
       return t
