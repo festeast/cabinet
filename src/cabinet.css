@@ -51,8 +51,10 @@
 .ring.b{inset:29%;animation-duration:6s;animation-direction:reverse;opacity:.7}
 .ring.c{inset:19%;border:1px dotted rgba(143,176,201,.6);animation-duration:40s}
 @keyframes spin{to{transform:rotate(360deg)}}
-.core{position:absolute;inset:33%;border-radius:50%;border:0;cursor:pointer;display:grid;place-items:center;color:#04121e;font:700 clamp(.8rem,3vw,1.1rem) 'Unbounded',sans-serif;background:radial-gradient(circle,#e8fdff 0,var(--teal) 30%,rgba(43,124,255,.55) 65%,transparent 72%);box-shadow:0 0 3rem rgba(25,227,209,.5);animation:beat 3.4s ease-in-out infinite}
-.core:hover{box-shadow:0 0 4.5rem rgba(25,227,209,.85)}
+/* Эхо — говорящая линия в центре орбиты */
+.core{position:absolute;left:14%;right:14%;top:36%;bottom:36%;border:0;background:none;cursor:pointer;display:grid;grid-template-rows:1fr auto;justify-items:center;gap:.2rem;color:#f5e6a8;font:700 clamp(.75rem,2.6vw,1rem) 'Unbounded',sans-serif;letter-spacing:.2em;border-radius:1rem}
+.core .echo-wave{width:100%;height:100%;filter:drop-shadow(0 0 .6rem rgba(25,227,209,.55))}
+.core:hover .echo-wave,.core:focus-visible .echo-wave{filter:drop-shadow(0 0 1.2rem rgba(245,230,168,.8))}
 @keyframes beat{50%{transform:scale(1.06)}}
 .node{position:absolute;left:50%;top:50%;width:5.4rem;display:grid;justify-items:center;gap:.25rem;background:none;border:0;cursor:pointer;color:var(--text);transform:translate(-50%,-50%) rotate(var(--a)) translateY(calc(var(--r)*-1)) rotate(calc(var(--a)*-1))}
 .node b{font:600 .78rem 'Manrope',sans-serif}
@@ -92,14 +94,6 @@
 
 /* Круглый стол и карточки */
 .table{flex:1;overflow-y:auto;width:100%;max-width:46rem;margin:0 auto;padding:1rem;display:flex;flex-direction:column;gap:.8rem}
-.card{border-left:3px solid var(--c);background:var(--panel);border-radius:.3rem .9rem .9rem .3rem;padding:.6rem 1rem;animation:rise .5s both}
-.card h3{display:flex;align-items:center;gap:.5rem;font:600 .9rem 'Manrope',sans-serif;color:var(--c)}
-.card h3 .mdl{margin-left:auto;color:var(--muted);font:400 .72rem 'Manrope',sans-serif}
-.card p{margin:.2rem 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
-.card.q{align-self:flex-end;max-width:85%;background:#123a63}
-.card.mod{background:transparent;border-left-style:dashed}
-.card.sum{background:rgba(245,230,168,.08);border:1px solid var(--c);border-radius:.9rem}
-.card .ghost{margin-top:.5rem}
 .srcnote{margin:0;font-size:.85rem;text-align:center}
 .ask{border-top:1px solid var(--line);padding:.7rem 1rem;width:100%;max-width:46rem;margin:0 auto}
 .ask .stack{gap:.5rem}
@@ -141,9 +135,10 @@ body[data-cab-theme=history]{background:radial-gradient(circle at 80% 15%,rgba(2
 body[data-cab-theme=noir]{background:radial-gradient(circle at 85% 12%,rgba(255,70,70,.22),transparent 38%),linear-gradient(180deg,#0b0b0f,#1a1a22)}
 body[data-cab-theme=custom]{background:linear-gradient(rgba(6,18,31,.55),rgba(6,18,31,.82)),var(--bgimg,none) center/cover fixed,#06121f}
 /* Циклы, разбор глав, оценка реплик */
-.series{border:1px solid var(--line);border-radius:.9rem;padding:.7rem .8rem;gap:.5rem;background:var(--panel)}
-.series > .row b{display:block}
-.series > .row small{display:block;color:var(--muted)}
+.cab .series{border:1px solid var(--line);border-radius:1rem;padding:.9rem 1rem;gap:.6rem;background:var(--panel)}
+.cyc-head b{display:block;font:700 1.05rem 'Unbounded',sans-serif}
+.cyc-head small{display:block;color:var(--muted);margin-top:.2rem}
+.newcycle input{flex:1}
 .series .doc{background:transparent}
 .chs{display:grid;gap:.6rem;margin:0;padding-left:1.4rem;max-height:32rem;overflow:auto}
 .chs p{margin:.2rem 0}
@@ -157,3 +152,66 @@ input.sm{width:9rem;padding:.2rem .4rem;font-size:.85em}
   .doc > .row.top > .grow,.series > .row.top > .grow{flex:1 1 calc(100% - 2.5rem);min-width:0}
   .series > .row.top > .grow{flex-basis:100%}
 }
+
+/* Говорящая линия Эхо: волны бегут вдоль линии и дышат по высоте; чем громче речь, тем выше амплитуда */
+.echo-wave{display:block;width:100%;height:3rem;--lo:.18;--hi:.38;--sp:1;-webkit-mask-image:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent);mask-image:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)}
+.echo-wave svg{display:block;width:100%;height:100%;overflow:visible}
+.echo-wave .amp{transform-box:view-box;transform-origin:50% 50%;animation:breathe 3s ease-in-out infinite}
+.echo-wave .run{transform-box:fill-box;animation:runwave 5s linear infinite}
+.echo-wave.l1{--lo:.4;--hi:.8}
+.echo-wave.l2{--lo:.65;--hi:1.15}
+.echo-wave.l1 .amp,.echo-wave.l2 .amp{animation-duration:1.1s!important}
+.echo-wave.l2 .amp{animation-duration:.7s!important}
+.echo-wave.l2 .run{animation-duration:1.6s!important}
+.echo-wave.mini{height:100%;-webkit-mask-image:none;mask-image:none}
+@keyframes breathe{0%,100%{transform:scaleY(var(--lo))}50%{transform:scaleY(var(--hi))}}
+@keyframes runwave{to{transform:translateX(-50%)}}
+@media (prefers-reduced-motion:reduce){.echo-wave .amp,.echo-wave .run{animation:none}.echo-wave .amp{transform:scaleY(.5)}}
+.av.echo{background:#071a2b;border-color:#f5e6a8;padding:.15rem}
+
+/* Круглый стол: сцена с Эхо-линией и местами помощников */
+.stage{position:relative;height:15rem;border:1px solid var(--line);border-radius:50%/42%;background:radial-gradient(ellipse at center,rgba(25,227,209,.12),rgba(43,124,255,.05) 55%,transparent 72%),var(--panel);box-shadow:inset 0 0 3rem rgba(4,18,30,.6)}
+.stage .seats{position:absolute;inset:0}
+.seat{position:absolute;left:var(--x);top:var(--y);transform:translate(-50%,-50%);display:grid;justify-items:center;gap:.15rem;transition:transform .3s,opacity .3s;opacity:.78}
+.seat small{font-size:.72rem;color:var(--muted);white-space:nowrap}
+.seat.on{opacity:1;transform:translate(-50%,-50%) scale(1.14)}
+.seat.on small{color:var(--c)}
+.seat.on .av{box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 45%,transparent),0 0 1.6rem var(--c);animation:seatpulse 1s ease-in-out infinite}
+@keyframes seatpulse{50%{box-shadow:0 0 0 7px color-mix(in srgb,var(--c) 15%,transparent),0 0 2.2rem var(--c)}}
+.echo-center{position:absolute;left:22%;right:22%;top:50%;transform:translateY(-50%);display:grid;justify-items:center;gap:.2rem}
+.echo-center .echo-wave{height:4.2rem}
+.echo-center b{font:700 .72rem 'Unbounded',sans-serif;letter-spacing:.3em;color:#f5e6a8;opacity:.85}
+.echo-center.on b{opacity:1;text-shadow:0 0 .8rem #f5e6a8}
+.stage.compact{height:auto;border-radius:0;border-width:0 0 1px;display:flex;align-items:center;gap:1rem;padding:.5rem 1rem;box-shadow:none;background:radial-gradient(ellipse at center,rgba(25,227,209,.1),transparent 70%),var(--panel)}
+.stage.compact .seats{position:static;display:flex;gap:.6rem;flex-wrap:wrap;order:2}
+.stage.compact .seat{position:static;transform:none}
+.stage.compact .seat.on{transform:scale(1.1)}
+.stage.compact .seat small{display:none}
+.stage.compact .echo-center{position:static;transform:none;flex:1;min-width:8rem}
+.stage.compact .echo-center .echo-wave{height:2.4rem}
+
+/* Лента обсуждения: помощники — реплики на своей цветной линии, Эхо — голосовая линия между ними */
+@keyframes turnin{from{opacity:0;transform:translateY(.5rem)}}
+.turn{display:grid;grid-template-columns:2.4rem minmax(0,1fr);gap:.7rem;animation:turnin .4s both}
+.turn .rail{display:flex;flex-direction:column;align-items:center}
+.turn .rail::after{content:'';flex:1;width:2px;margin-top:.3rem;background:linear-gradient(var(--c),transparent);opacity:.6}
+.turn .body{background:var(--panel);border:1px solid color-mix(in srgb,var(--c) 35%,var(--line));border-radius:.3rem 1rem 1rem 1rem;padding:.55rem .9rem}
+.turn.live .body{box-shadow:0 0 1.4rem color-mix(in srgb,var(--c) 30%,transparent)}
+.turn h3{display:flex;align-items:center;gap:.5rem;font:600 .9rem 'Manrope',sans-serif;color:var(--c)}
+.turn p,.echo-say p{margin:.2rem 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.turn.me{display:block;align-self:flex-end;max-width:85%;background:#123a63;border-radius:1rem 1rem .3rem 1rem;padding:.6rem .9rem}
+.turn.me p{margin:0}
+.mdl{margin-left:auto;color:var(--muted);font:400 .72rem 'Manrope',sans-serif}
+.echo-say{text-align:center;padding:.2rem 0;animation:turnin .4s both}
+.echo-say .echo-line{max-width:24rem;margin:0 auto}
+.echo-say .echo-line .echo-wave{height:2rem}
+.echo-say h3{display:flex;justify-content:center;align-items:center;gap:.5rem;font:700 .72rem 'Unbounded',sans-serif;letter-spacing:.25em;color:#f5e6a8}
+.echo-say h3 .mdl{margin-left:.5rem;letter-spacing:0}
+.echo-say p{max-width:36rem;margin-left:auto;margin-right:auto;color:#e9e2c6}
+.echo-say.sum{text-align:left;border:1px solid rgba(245,230,168,.4);border-radius:1rem;background:rgba(245,230,168,.06);padding:.6rem 1rem .9rem}
+.echo-say.sum .ghost{margin-top:.6rem}
+@media (max-width:560px){.stage{height:13rem}.echo-center{left:26%;right:26%}.seat small{font-size:.65rem}}
+
+.who-pick{display:grid;gap:.5rem}
+.who-pick summary{cursor:pointer;color:var(--muted);font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.who-pick[open] summary{margin-bottom:.4rem}

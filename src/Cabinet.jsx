@@ -4,7 +4,8 @@ import { ls, docGet, docPut, docDel } from './lib/store'
 import * as ai from './lib/ai'
 import { buildContext, seriesDocs } from './lib/context'
 import { pickPassages, cut } from './lib/text'
-import { bibleKey, seriesKey, studyBook, studyCycle } from './lib/bible'
+import { bibleKey, seriesKey, studyBook, studyCycle, priorOf } from './lib/bible'
+import { readFileDoc, natural } from './lib/books'
 import { BASE } from './lib/agents'
 import Home from './views/Home'
 import Library from './views/Library'
@@ -41,6 +42,7 @@ export default function Cabinet() {
   const [lib, setLib] = useState(() => ls.get('cab_lib', []))
   const [bibles, setBibles] = useState({})
   const [series, setSeries] = useState({})
+  const [cycles, setCycles] = useState(() => ls.get('cab_cycles', []))
   const [notes, setNotes] = useState(() => ls.get('cab_notes', ''))
   const [taste, setTaste] = useState(() => ls.get('cab_taste', { picks: [], skips: [], hc: {}, samples: [] }))
   const [activeId, setActiveId] = useState(() => ls.get('cab_active', ''))
@@ -60,6 +62,7 @@ export default function Cabinet() {
   }, [])
   useEffect(() => { ls.set('cab_model', model); ls.set('cab_usepaid', usePaid); ls.set('cab_paidm', paidModel); ls.set('cab_capman', capMan) }, [model, usePaid, paidModel, capMan])
   useEffect(() => { ls.set('cab_lib', lib) }, [lib])
+  useEffect(() => { ls.set('cab_cycles', cycles) }, [cycles])
   useEffect(() => { ls.set('cab_notes', notes) }, [notes])
   useEffect(() => { ls.set('cab_active', active) }, [active])
   useEffect(() => {
@@ -147,6 +150,27 @@ export default function Cabinet() {
     const sb = await docGet(seriesKey(from)).catch(() => null)
     if (sb) { await docPut(seriesKey(n), { ...sb, name: n }).catch(() => {}); await docDel(seriesKey(from)).catch(() => {}) }
     setLib((l) => l.map((d) => (d.series === from ? { ...d, series: n } : d)))
+    setCycles((c) => [...new Set(c.map((x) => (x === from ? n : x)))])
+  }
+  // Цикл создаётся пустым, части добавляются в него по одной или пачкой (работает и на телефоне).
+  const addCycle = (name) => { const n = name.trim(); if (n) setCycles((c) => (c.includes(n) ? c : [...c, n])) }
+  async function addParts(name, files) {
+    const fs = [...files].sort((a, b) => natural(a.name, b.name))
+    const base = Math.max(-1, ...lib.filter((d) => d.series === name).map((d) => d.order ?? 0)) + 1
+    const out = [], bad = []
+    for (const f of fs) {
+      try { const x = await readFileDoc(f); x.meta = { ...x.meta, name: f.name.replace(/\.[^.]+$/, ''), series: name, order: base + out.length }; out.push(x) } catch { bad.push(f.name) }
+    }
+    if (out.length) await addDocs(out.reverse())
+    addCycle(name)
+    return { added: out.length, bad }
+  }
+  async function removeCycle(name) {
+    const docs = lib.filter((d) => d.series === name)
+    if (docs.length && !confirm(`Удалить цикл «${name}» вместе с частями (${docs.length}) и всем изученным?`)) return
+    for (const d of docs) { await docDel(d.id).catch(() => {}); await docDel(bibleKey(d.id)).catch(() => {}) }
+    await docDel(seriesKey(name)).catch(() => {})
+    setLib((l) => l.filter((d) => d.series !== name)); setCycles((c) => c.filter((x) => x !== name))
   }
   const setDocSeries = (id, name) => setLib((l) => {
     const n = name.trim(), max = Math.max(-1, ...l.filter((d) => d.series === n).map((d) => d.order ?? 0))
@@ -168,10 +192,12 @@ export default function Cabinet() {
   const saveBible = (id, b) => { setBible(id, b); docPut(bibleKey(id), b).catch(() => {}) }
   const saveSeries = (n, b) => { setSeries((m) => ({ ...m, [n]: b })); docPut(seriesKey(n), b).catch(() => {}) }
 
+  // onWait: модель занята или упёрлась в минутный лимит — показываем, что ждём, а не зависли.
+  const jrun = (ac) => (p, x) => run(p, { ...x, signal: ac.signal, onWait: (ms) => setJob((j) => ({ ...j, wait: Date.now() + ms })), onModel: () => setJob((j) => (j?.wait ? { ...j, wait: 0 } : j)) })
   async function studyOne(doc, ac, o = {}) {
     const text = await docGet(doc.id)
     if (!text) throw new Error(`Текст книги «${doc.name}» не найден в библиотеке.`)
-    const b = await studyBook({ doc, text, fresh: o.fresh, signal: ac.signal, run: (p, x) => run(p, { ...x, signal: ac.signal }), onStep: (s) => { setJob((j) => ({ ...j, book: doc.id, phase: s.phase, i: s.i, n: s.n })); setBible(doc.id, s.bible) } })
+    const b = await studyBook({ doc, text, fresh: o.fresh, prior: o.prior || '', signal: ac.signal, run: jrun(ac), onStep: (s) => { setJob((j) => ({ ...j, book: doc.id, phase: s.phase, i: s.i, n: s.n })); setBible(doc.id, s.bible) } })
     setBible(doc.id, b)
     return b
   }
@@ -186,18 +212,20 @@ export default function Cabinet() {
     }
     jobCtl.current = null; setJob(null)
   }
-  const study = (doc, o = {}) => guard({ id: doc.id, book: doc.id }, (ac) => studyOne(doc, ac, o))
+  // Часть цикла изучается «с продолжением»: ей передаётся память о всех прошлых частях.
+  const priorFor = (doc, bs) => { const g = seriesDocs(lib, doc); return priorOf(g.slice(0, Math.max(0, g.findIndex((d) => d.id === doc.id))), bs) }
+  const study = (doc, o = {}) => guard({ id: doc.id, book: doc.id }, (ac) => studyOne(doc, ac, { ...o, prior: doc.series ? priorFor(doc, bibles) : '' }))
   // Весь цикл: каждая книга подробно по порядку, затем сводная библия цикла и проверка несостыковок между книгами.
   const studySeries = (name, o = {}) => guard({ id: `series:${name}`, series: name }, async (ac) => {
     const docs = seriesDocs(lib, lib.find((d) => d.series === name))
-    const bs = {}
-    for (const d of docs) bs[d.id] = await studyOne(d, ac, o)
+    const bs = { ...bibles }
+    for (const d of docs) bs[d.id] = await studyOne(d, ac, { ...o, prior: priorFor(d, bs) })
     setJob((j) => ({ ...j, book: '', phase: 'series' }))
-    const sb = await studyCycle({ name, docs, bibles: bs, signal: ac.signal, run: (p, x) => run(p, { ...x, signal: ac.signal }), onStep: (s) => setJob((j) => ({ ...j, phase: s.phase })) })
+    const sb = await studyCycle({ name, docs, bibles: bs, signal: ac.signal, run: jrun(ac), onStep: (s) => setJob((j) => ({ ...j, phase: s.phase })) })
     setSeries((m) => ({ ...m, [name]: sb }))
   })
 
-  const app = { key, run, ctx, learn, addSample, learnEdits, setLessons, setRules, taste, lib, bibles, series, notes, setNotes, active, setActive: setActiveId, addDoc, addDocs, removeDoc, toggleDoc, renameSeries, setDocSeries, moveDoc, saveBible, saveSeries, study, studySeries, stopStudy: () => jobCtl.current?.abort(), job, studyErr, capEff }
+  const app = { key, run, ctx, learn, addSample, learnEdits, setLessons, setRules, taste, lib, bibles, series, notes, setNotes, active, setActive: setActiveId, addDoc, addDocs, removeDoc, cycles, addCycle, addParts, removeCycle, toggleDoc, renameSeries, setDocSeries, moveDoc, saveBible, saveSeries, study, studySeries, stopStudy: () => jobCtl.current?.abort(), job, studyErr, capEff }
   const go = (view, arg) => setNav({ view, arg })
 
   function login(e) {

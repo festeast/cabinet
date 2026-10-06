@@ -25,7 +25,7 @@ export async function readFileDoc(f) {
 }
 
 // «Том 2» идёт после «Том 1», а «Глава 10» после «Главы 9».
-const natural = (a, b) => a.localeCompare(b, 'ru', { numeric: true, sensitivity: 'base' })
+export const natural = (a, b) => a.localeCompare(b, 'ru', { numeric: true, sensitivity: 'base' })
 const bare = (n) => n.replace(/\.[^.]+$/, '')
 
 // Склеиваем файлы-главы в одну книгу. Если в файле нет своего заголовка «Глава…», ставим его по имени файла,

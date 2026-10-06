@@ -99,8 +99,29 @@ export const tokensOf = (s) => Math.ceil((s || '').length / 2.5)
 
 // «Авто»: 4 самые быстрые модели из истории; если модель молчит дольше 15 секунд или сбоит, идём к следующей.
 // Длинные запросы (изучение глав целиком) отправляются только моделям, у которых хватает контекста.
+// patient: для изучения книг. Модели дают до 3 минут на начало ответа, а если все заняты или упёрлись
+// в минутный лимит, ждём и пробуем снова (до 4 кругов), а не обрываем разбор.
 export async function complete(key, prompt, o = {}) {
-  const { models = [], model = 'auto', paid, cap = 50, onText = () => {}, signal, onModel = () => {}, system, temperature } = o
+  if (!o.patient) return attempt(key, prompt, o)
+  const waits = [0, 45000, 90000, 150000]
+  let last
+  for (const w of waits) {
+    if (w) { o.onWait?.(w); await sleep(w, o.signal) }
+    try { return await attempt(key, prompt, o) } catch (e) {
+      if (o.signal?.aborted || e.status === 401 || e.status === 402 || e.daily) throw e
+      last = e
+    }
+  }
+  throw last
+}
+
+const sleep = (ms, signal) => new Promise((res, rej) => {
+  const t = setTimeout(res, ms)
+  signal?.addEventListener('abort', () => { clearTimeout(t); rej(Object.assign(new Error('Остановлено'), { name: 'AbortError' })) }, { once: true })
+})
+
+async function attempt(key, prompt, o) {
+  const { models = [], model = 'auto', paid, cap = 50, onText = () => {}, signal, onModel = () => {}, system, temperature, patient } = o
   const gen = { system, temperature }
   const auto = model === 'auto'
   const st = stat()
@@ -110,7 +131,7 @@ export async function complete(key, prompt, o = {}) {
   const need = tokensOf(prompt) + tokensOf(system) + 3000
   const roomy = models.filter((m) => !m.ctx || m.ctx >= need)
   const pool = (roomy.length ? roomy : models).map((m) => m.id)
-  const list = auto ? alive(pool).sort((a, b) => (st[a]?.t ?? 6000) - (st[b]?.t ?? 6000)).slice(0, 4) : [model]
+  const list = auto ? alive(pool).sort((a, b) => (st[a]?.t ?? 6000) - (st[b]?.t ?? 6000)).slice(0, patient ? 6 : 4) : [model]
   if (!list.length && paidOn) return goPaid()
   if (!list.length) throw new Error('Нет доступных бесплатных моделей: список не загрузился или все отключены.')
   const from = auto ? rot++ : 0
@@ -119,7 +140,7 @@ export async function complete(key, prompt, o = {}) {
     const id = list[(from + k) % list.length], t0 = Date.now()
     try {
       onModel(id)
-      const t = await stream(key, id, prompt, onText, signal, auto ? (need > 12000 ? 40000 : 15000) : 0, gen)
+      const t = await stream(key, id, prompt, onText, signal, auto ? (patient ? 180000 : need > 12000 ? 60000 : 30000) : 0, gen)
       if (!t.trim()) throw new Error('Модель ничего не ответила.')
       note(id, true, Date.now() - t0)
       return t
@@ -133,5 +154,7 @@ export async function complete(key, prompt, o = {}) {
     }
   }
   if (paidOn && lim) return goPaid()
+  // Если у всех моделей кончился дневной лимит, ждать бессмысленно.
+  if (lim && hits().filter((h) => h.daily).length >= list.length) throw Object.assign(last, { daily: true })
   throw last
 }

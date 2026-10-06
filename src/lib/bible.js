@@ -6,7 +6,7 @@ import { splitUnits, parseJSON, asText, styleStats, cut } from './text'
 export const bibleKey = (id) => `bible:${id}`
 export const seriesKey = (name) => `series:${name}`
 export const V = 2
-export const emptyBible = (n) => ({ v: V, chapters: Array(n).fill(null), brief: '', characters: '', world: '', threads: '', timeline: '', issues: '', style: '', stats: null, synthDone: -1, checkDone: -1 })
+export const emptyBible = (n) => ({ v: V, chapters: Array(n).fill(null), brief: '', characters: '', world: '', threads: '', timeline: '', issues: '', style: '', stats: null, synthDone: -1, checkDone: -1, memory: '', memAt: 0 })
 export const doneCount = (b) => (b ? b.chapters.filter(Boolean).length : 0)
 // Библия, изученная прежней (краткой) версией разбора: её стоит переизучить подробно.
 export const isShallow = (b) => !!b && (b.v || 1) < V
@@ -21,8 +21,11 @@ const CH = `Прочитай главу целиком и верни ТОЛЬК�
 "facts":["важные факты канона, которые нельзя нарушить дальше: даты, возраст, места, правила мира, техника, обещания, тайны, кто что знает; до 10 пунктов"],
 "place":"где происходит действие","time":"когда происходит и сколько времени прошло",
 "opened":["вопросы, тайны и линии, которые глава открывает"],"closed":["линии, которые глава закрывает"],
+"links":["как глава связана с тем, что было раньше: какие прежние линии продолжает, что объясняет, на какие события и обещания ссылается; до 5 пунктов"],
 "hook":"чем глава заканчивается и какой вопрос оставляет читателю"}`
 const PART = 'Это часть длинной главы. Разбери только эту часть по той же схеме JSON.'
+const BEFORE = '[Что было раньше: это нужно, чтобы понимать связи и смысл; разбирай только текущую главу и не пересказывай прошлое заново]'
+const MEMO = `Обнови «память сюжета» — связный конспект всего прочитанного до этого места, который нужен, чтобы понимать следующие главы. Объедини прежнюю память с новыми главами. Сохрани по порядку все важные события, всех значимых героев и их состояние сейчас, кто что знает, тайны, обещания, незакрытые линии, хронологию. Ничего важного не выбрасывай, сжимай только детали. До 800 слов, без вступлений. ${LANG}`
 const RETRY = 'Предыдущий ответ не удалось разобрать. Верни СТРОГО валидный JSON по схеме, без текста до и после.'
 const COMPRESS = `Сожми этот список разборов глав в связный подробный пересказ до 450 слов: сохрани по порядку все ключевые события, решения героев, раскрытые тайны, развилки и где сюжет остановился. Без вступлений. ${LANG}`
 const SYN = `По подробным разборам глав составь «библию книги» для соавторов, которые будут писать продолжение. Верни ТОЛЬКО JSON:
@@ -53,7 +56,8 @@ function chunks(text, size) {
   }
   return cur ? [...out, cur] : out
 }
-const sys = { system: ANALYST, temperature: 0.2 }
+// patient: на разбор даём моделям больше времени и терпеливо ждём при лимитах.
+const sys = { system: ANALYST, temperature: 0.2, patient: true }
 
 // JSON с одной повторной попыткой: подробный разбор дороже потерять, чем сделать лишний запрос.
 async function askJSON(run, prompt, ok) {
@@ -67,21 +71,24 @@ async function askJSON(run, prompt, ok) {
 
 // Глава читается ЦЕЛИКОМ. Слишком длинная делится на части, разборы частей сливаются.
 const FULL = 28000
-async function analyzeChapter(unit, run) {
+async function analyzeChapter(unit, run, before = '') {
   const parts = unit.text.length <= FULL ? [unit.text] : chunks(unit.text, 22000)
   const rs = []
   for (const [k, p] of parts.entries()) {
     const head = parts.length > 1 ? `${PART} (часть ${k + 1} из ${parts.length})\n` : ''
-    rs.push(await askJSON(run, `${CH}\n${head}\n[Глава: ${unit.title}]\n${p}`, (j) => obj(j) && j.summary))
+    // Предыдущие части той же главы тоже идут в «что было раньше», чтобы смысл не обрывался на стыке.
+    const prev = rs.map((r) => r.j?.summary && asText(r.j.summary)).filter(Boolean).join(' ')
+    const mem = [before, prev && `Начало этой главы: ${prev}`].filter(Boolean).join('\n')
+    rs.push(await askJSON(run, `${CH}\n${head}${mem ? `\n${BEFORE}\n${mem}\n` : ''}\n[Глава: ${unit.title}]\n${p}`, (j) => obj(j) && j.summary))
   }
   const js = rs.map((r) => r.j).filter(Boolean)
-  if (!js.length) return { title: unit.title, summary: rs.map((r) => r.raw).join(' ').replace(/\s+/g, ' ').trim().slice(0, 900), events: [], who: [], changes: [], facts: [], opened: [], closed: [], place: '', time: '', hook: '', d: V }
+  if (!js.length) return { title: unit.title, summary: rs.map((r) => r.raw).join(' ').replace(/\s+/g, ' ').trim().slice(0, 900), links: [], events: [], who: [], changes: [], facts: [], opened: [], closed: [], place: '', time: '', hook: '', d: V }
   const all = (k, n) => [...new Set(js.flatMap((j) => arr(j[k], n)))].slice(0, n)
   return {
     title: unit.title,
     summary: js.map((j) => asText(j.summary)).join(' ').slice(0, 1400),
     events: all('events', 12), who: all('who', 20), changes: all('changes', 10), facts: all('facts', 14),
-    opened: all('opened', 8), closed: all('closed', 8),
+    opened: all('opened', 8), closed: all('closed', 8), links: all('links', 6),
     place: [...new Set(js.map((j) => asText(j.place)).filter(Boolean))].join('; ').slice(0, 200),
     time: [...new Set(js.map((j) => asText(j.time)).filter(Boolean))].join('; ').slice(0, 200),
     hook: asText(js[js.length - 1].hook).slice(0, 400),
@@ -99,6 +106,7 @@ export function chapterLine(c, full = true) {
     full && c.changes?.length && `  Изменения героев: ${c.changes.join('; ')}`,
     full && c.opened?.length && `  Открыто: ${c.opened.join('; ')}`,
     full && c.closed?.length && `  Закрыто: ${c.closed.join('; ')}`,
+    full && c.links?.length && `  Связи с прошлым: ${c.links.join('; ')}`,
     c.hook && `  Финал: ${c.hook}`,
   ].filter(Boolean).join('\n')
 }
@@ -149,7 +157,26 @@ async function styleOf(text, run) {
 }
 
 // Возобновляемый разбор: каждая глава сохраняется сразу, поэтому после остановки или лимита можно продолжить.
-export async function studyBook({ doc, text, run, signal, onStep, fresh = false }) {
+// Чтение идёт последовательно, как читает человек: к каждой главе прикладывается «память сюжета»
+// (сжатый конспект всего прочитанного, включая прошлые части цикла) и подробные разборы последних глав.
+const RECENT = 10
+function before(bible, i, prior) {
+  const from = bible.memAt || 0
+  // Три главы перед точкой сжатия остаются подробными, чтобы стык памяти не обрывал смысл.
+  const recent = bible.chapters.slice(Math.max(0, from - 3), i).filter(Boolean).map((c) => chapterLine(c, false))
+  return [prior && `Прошлые части цикла:\n${prior}`, bible.memory && `Память сюжета этой книги:\n${bible.memory}`, recent.length && `Последние главы:\n${recent.join('\n')}`].filter(Boolean).join('\n\n')
+}
+async function remember(bible, i, run) {
+  const from = bible.memAt || 0
+  const lines = bible.chapters.slice(from, i).filter(Boolean).map((c) => chapterLine(c))
+  if (!lines.length) return
+  for (const ch of chunks(lines.join('\n'), 24000)) {
+    bible.memory = (await run(`${MEMO}\n\n[Прежняя память]\n${bible.memory || 'нет, это начало книги'}\n\n[Новые главы]\n${ch}`, sys)).trim()
+  }
+  bible.memAt = i
+}
+
+export async function studyBook({ doc, text, run, signal, onStep, fresh = false, prior = '' }) {
   const units = splitUnits(text)
   let bible = fresh ? null : await docGet(bibleKey(doc.id)).catch(() => null)
   if (!bible || bible.chapters.length !== units.length) bible = emptyBible(units.length)
@@ -160,8 +187,19 @@ export async function studyBook({ doc, text, run, signal, onStep, fresh = false 
   for (let i = 0; i < n; i++) {
     if (bible.chapters[i]) continue
     if (signal?.aborted) throw abortErr()
+    if (i - (bible.memAt || 0) >= RECENT) {
+      onStep({ phase: 'memory', i, n, bible: snap() })
+      await remember(bible, i, r)
+      await docPut(bibleKey(doc.id), bible)
+    }
     onStep({ phase: 'chapters', i, n, bible: snap() })
-    bible.chapters[i] = await analyzeChapter(units[i], r)
+    bible.chapters[i] = await analyzeChapter(units[i], r, before(bible, i, prior))
+    await docPut(bibleKey(doc.id), bible)
+  }
+  // Итоговая память книги: с ней следующая часть цикла читается «с продолжением».
+  if ((bible.memAt || 0) < n && doneCount(bible) === n) {
+    onStep({ phase: 'memory', i: n, n, bible: snap() })
+    await remember(bible, n, r)
     await docPut(bibleKey(doc.id), bible)
   }
   const done = doneCount(bible)
@@ -211,4 +249,14 @@ export async function studyCycle({ name, docs, bibles, run, signal, onStep }) {
   await docPut(seriesKey(name), sb)
   onStep({ phase: 'done', i: 2, n: 2 })
   return sb
+}
+
+// Что передать следующей части цикла: о чём были прошлые части и память сюжета к их концу.
+export function priorOf(docs, bibles) {
+  const t = docs.map((d, i) => {
+    const b = bibles[d.id]
+    return b && [`Часть ${i + 1} «${d.name}»: ${b.brief || ''}`, b.memory && `Память сюжета к концу части:\n${b.memory}`, b.threads && `Незакрытые линии:\n${b.threads}`].filter(Boolean).join('\n')
+  }).filter(Boolean).join('\n\n')
+  // Если прошлых частей много, оставляем самое свежее: конец предыдущей части важнее начала первой.
+  return t.length > 14000 ? `…${t.slice(-14000)}` : t
 }
