@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { who } from '../lib/agents'
+import { who, BASE } from '../lib/agents'
 import { BLOCKS, genOptions, planPrompt, draftPrompt, contPrompt } from '../lib/ideas'
 import { ls, uid } from '../lib/store'
 import { textDoc } from '../lib/books'
@@ -76,7 +76,7 @@ export default function Chapter({ app, arg, go }) {
     const ac = begin('plan')
     try {
       const ctx = (await app.ctx(`${c.title} ${c.brief}`, { book: c.bookId, passages: false })).text
-      const t = await run(ac)(planPrompt(ctx, c), { onText: (x) => upd((y) => ({ ...y, plan: x })) })
+      const t = await run(ac)(planPrompt(ctx, c), { system: BASE, temperature: 0.5, onText: (x) => upd((y) => ({ ...y, plan: x })) })
       upd((y) => ({ ...y, plan: t.trim() }))
     } catch (e) { if (e.name !== 'AbortError') setErr(e.message) }
     setBusy('')
@@ -89,15 +89,23 @@ export default function Chapter({ app, arg, go }) {
     const baseText = more ? `${c.draft.trimEnd()}\n\n` : ''
     try {
       const ctx = (await app.ctx(`${c.title} ${c.brief}`, { book: c.bookId, passages: false, sample: true })).text
-      const t = await run(ac)((more ? contPrompt : draftPrompt)(ctx, c), { onText: (x) => upd((y) => ({ ...y, draft: baseText + x, done: false })) })
-      upd((y) => ({ ...y, draft: baseText + t.trim() }))
+      const t = await run(ac)((more ? contPrompt : draftPrompt)(ctx, c), { system: BASE, temperature: 0.85, onText: (x) => upd((y) => ({ ...y, draft: baseText + x, done: false })) })
+      // Запоминаем, что написал ИИ: при принятии сравним с правками автора и извлечём уроки.
+      upd((y) => ({ ...y, draft: baseText + t.trim(), ai: more ? `${y.ai || c.draft.trimEnd()}\n\n${t.trim()}` : t.trim() }))
     } catch (e) { if (e.name !== 'AbortError') setErr(e.message) }
     setBusy('')
   }
-  function accept() {
-    app.addSample(cur.draft)
+  async function accept() {
+    const c = cur
+    app.addSample(c.draft)
     upd((x) => ({ ...x, done: true }))
     setNote('Принято: этот текст и ваши выборы будут учтены в следующих главах.')
+    if (!c.ai || c.ai === c.draft) return
+    setNote('Принято. Сравниваю с черновиком ИИ, чтобы помощники научились на ваших правках…')
+    try {
+      const n = await app.learnEdits(c.ai, c.draft)
+      setNote(n ? `Принято. Из ваших правок помощники вынесли уроков: ${n} (см. Библиотека → «Чему научились помощники»).` : 'Принято: этот текст и ваши выборы будут учтены в следующих главах.')
+    } catch { setNote('Принято. Уроки из правок извлечь не удалось (лимит или сбой), текст всё равно учтён.') }
   }
   async function toLib() {
     const name = `${book?.name || 'Книга'}: ${cur.title} (черновик)`

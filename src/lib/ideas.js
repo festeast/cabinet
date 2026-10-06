@@ -1,5 +1,5 @@
 // Сборка главы по блокам: варианты ходов от помощников → план → черновик.
-import { HELPERS } from './agents'
+import { HELPERS, BASE } from './agents'
 import { parseJSON, cut } from './text'
 import { uid } from './store'
 
@@ -27,7 +27,7 @@ ${head(chapter)}
 ${chosenText(chapter) || 'пока ничего'}
 [Уже предлагали, не повторяй]
 ${seen.slice(-10).map((s) => `- ${cut(s, 100)}`).join('\n') || 'нет'}`
-  const raw = await run(prompt)
+  const raw = await run(prompt, { system: BASE, temperature: 0.9 })
   const j = parseJSON(raw)
   let items = Array.isArray(j) ? j : Array.isArray(j?.options) ? j.options : []
   items = items.filter((x) => x && typeof x.text === 'string' && x.text.trim())
@@ -47,7 +47,7 @@ ${head(c)}
 [Выбранные автором ходы]
 ${chosenText(c)}`
 
-const WRITE = 'Ты пишешь черновик главы голосом автора. Следуй плану, держись канона книги и стиля автора (см. [Стиль автора] и образец). Пиши по-русски, живо, сценами и диалогами. Никаких пояснений, списков и заголовков вне текста. Не завершай историю всей книги.'
+const WRITE = 'Ты пишешь черновик главы голосом автора. Следуй плану, держись канона книги и цикла, хронологии и характеров героев, стиля автора (см. [Стиль автора], уроки из правок и образец). Пиши по-русски, живо, сценами и диалогами. Никаких пояснений, списков и заголовков вне текста. Не завершай историю всей книги.'
 export const draftPrompt = (ctx, c) => `${WRITE} Объём около ${c.words} слов.
 
 ${ctx}

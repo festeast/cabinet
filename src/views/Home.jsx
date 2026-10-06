@@ -3,6 +3,7 @@ import { HELPERS, CORE } from '../lib/agents'
 import { doneCount } from '../lib/bible'
 import { config } from '../config'
 import Av from './Av'
+import EchoWave from './EchoWave'
 
 function useTyped(text) {
   const [n, setN] = useState(0)
@@ -15,7 +16,7 @@ function useTyped(text) {
   return text.slice(0, n)
 }
 
-const PHASE = { chapters: 'читаю главы', summary: 'собираю героев и сюжет', style: 'изучаю ваш стиль', done: 'готово' }
+const PHASE = { chapters: 'читаю главы', memory: 'обновляю память сюжета', summary: 'собираю героев и сюжет', check: 'проверяю несостыковки', style: 'изучаю ваш стиль', series: 'собираю библию цикла', seriesCheck: 'проверяю цикл', done: 'готово' }
 
 export default function Home({ app, go }) {
   const { lib, bibles, job } = app
@@ -33,8 +34,10 @@ export default function Home({ app, go }) {
     <div className="hub">
       <p className="greet" aria-label={text}><span aria-hidden="true">{typed}<i className="cur" /></span></p>
       <div className="orbit">
-        <i className="ring c" aria-hidden="true" /><i className="ring a" aria-hidden="true" /><i className="ring b" aria-hidden="true" />
-        <button className="core" onClick={() => go('table')} aria-label="Круглый стол со всеми помощниками"><span>{CORE.n}</span></button>
+        <i className="ring c" aria-hidden="true" />
+        <button className="core" onClick={() => go('table')} aria-label="Эхо: круглый стол со всеми помощниками">
+          <EchoWave level={job ? 1 : 0} /><span>{CORE.n}</span>
+        </button>
         {HELPERS.map((x, i) => (
           <button key={x.id} className="node" style={{ '--a': `${i * (360 / HELPERS.length)}deg`, '--c': x.c }} onClick={() => go('table', { pick: [x.id] })} title={`Спросить: ${x.n}`}>
             <Av w={x} /><b>{x.n}</b>
@@ -48,7 +51,7 @@ export default function Home({ app, go }) {
       </div>
       {job && (
         <p className="job" role="status">
-          Изучаю «{lib.find((d) => d.id === job.id)?.name}»: {PHASE[job.phase] || '…'}{job.phase === 'chapters' ? ` (${job.i + 1} из ${job.n})` : ''}
+          Изучаю «{job.series || lib.find((d) => d.id === job.book)?.name}»: {PHASE[job.phase] || '…'}{job.phase === 'chapters' ? ` (${job.i + 1} из ${job.n})` : ''}
           <button className="ghost" onClick={app.stopStudy}>Остановить</button>
         </p>
       )}
