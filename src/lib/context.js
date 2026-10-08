@@ -35,10 +35,13 @@ function relevant(books, bibles, query, skip) {
 
 export function buildContext({ docs, bibles, series = {}, activeId, notes, taste, passages = '', query = '', withSample = false }) {
   const parts = []
-  if (notes) parts.push(`[О книгах автора]\n${cut(notes, 2000)}`)
   const a = docs.find((d) => d.id === activeId)
   const b = a && bibles[a.id]
   const books = seriesDocs(docs, a)
+  // Суть книги идёт первой: это то, что помощники обязаны держать в голове всегда.
+  const core = b?.core || [...books].reverse().map((d) => bibles[d.id]?.core).find(Boolean)
+  if (core) parts.push(`[СУТЬ КНИГИ: главное, от чего нельзя отходить]\n${cut(core, 2000)}`)
+  if (notes) parts.push(`[О книгах автора]\n${cut(notes, 2000)}`)
   const sb = a?.series && series[a.series]
   if (sb) {
     parts.push([

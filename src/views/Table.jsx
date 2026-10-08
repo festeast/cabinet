@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { WRITERS, SCRIBE, who } from '../lib/agents'
+import { WRITERS, who } from '../lib/agents'
+import { prof, saveProf, feedback, ready, systemOf, distill } from '../lib/writers'
 import { ls, uid, docGet } from '../lib/store'
 import { short } from '../lib/ai'
 import { textDoc } from '../lib/books'
-import { cut } from '../lib/text'
+import { cut, voiceSample } from '../lib/text'
 import Av from './Av'
 import EchoWave from './EchoWave'
 
@@ -20,7 +21,7 @@ function parseDraft(raw) {
   return { plot: m[1].replace(/\*+/g, '').trim(), text: raw.slice(m[0].length).replace(/^\s*(?:[-—–*_]{3,}|\*\*\*)\s*\n/, '').trim() }
 }
 
-function writerPrompt({ ctx, book, end, s, ph, seen }) {
+function writerPrompt({ ctx, book, end, voice, s, ph, seen }) {
   const story = s.phases.filter((p) => p !== ph && p.chosen).map((p, k) => `${k + 1}. ${p.opts.find((o) => o.id === p.chosen)?.plot || ''}`).join('\n')
   const where = s.text
     ? `[Уже написанное продолжение, его конец: продолжай сразу после последней фразы]\n${s.text.length > 4500 ? `…${s.text.slice(-4500)}` : s.text}`
@@ -28,13 +29,13 @@ function writerPrompt({ ctx, book, end, s, ph, seen }) {
       ? `[Конец книги «${book}»: продолжение начинается сразу после последней фразы]\n…${end}`
       : '[Текста книги нет: начни историю по пожеланию автора и материалам]'
   return `${ctx}
-
+${voice ? `\n[Образец голоса автора: отрывок из самой книги. Пиши так же: такие же фразы, слова, подача диалогов и мыслей]\n${voice}\n` : ''}
 ${where}
 ${story ? `\n[Как сюжет уже развивался в прошлых фазах]\n${story}\n` : ''}
 [Пожелание автора к этой фазе]
 ${ph.wish || 'нет: выбери направление сам, исходя из канона и незакрытых линий'}
 ${seen.length ? `\n[Эти направления уже предлагали, придумай другое]\n${seen.map((t) => `- ${cut(t, 160)}`).join('\n')}\n` : ''}
-Напиши следующий фрагмент книги объёмом около ${s.size} знаков (примерно ${words(s.size)} слов) в своём направлении сюжета. Продолжай ровно с места, где текст оборвался: не пересказывай и не повторяй написанное, не начинай заново. Сюжет должен заметно сдвинуться, но не завершай историю всей книги.
+Сначала вспомни [СУТЬ КНИГИ]: фрагмент должен работать на её центральный конфликт и обещание читателю, а герои вести себя в характере. Затем напиши следующий фрагмент книги объёмом около ${s.size} знаков (примерно ${words(s.size)} слов) в своём направлении сюжета. Продолжай ровно с места, где текст оборвался: не пересказывай и не повторяй написанное, не начинай заново. Сюжет должен заметно сдвинуться, но не завершай историю всей книги.
 Ответ строго в таком виде:
 Сюжет: одно предложение о том, куда ты ведёшь историю в этом фрагменте
 ---
@@ -50,6 +51,9 @@ export default function Table({ app }) {
   const [err, setErr] = useState('')
   const [note, setNote] = useState('')
   const [showText, setShowText] = useState(false)
+  const [why, setWhy] = useState({})
+  const [, setTick] = useState(0)
+  const learning = useRef(new Set())
   const ctl = useRef(null)
   const cur = sessions.find((s) => s.id === sid)
   const ph = cur?.phases[cur.phases.length - 1]
@@ -70,8 +74,9 @@ export default function Table({ app }) {
       const q = [phase.wish, last?.opts.find((o) => o.id === last.chosen)?.plot, s.wish].filter(Boolean).join(' ')
       const ctx = (await app.ctx(q, { book: s.bookId, sample: true })).text
       const d = app.lib.find((x) => x.id === s.bookId)
-      const full = !s.text && d ? await docGet(d.id).catch(() => '') : ''
-      const end = full ? full.slice(-3500) : ''
+      const full = d ? (await docGet(d.id).catch(() => '')) || '' : ''
+      const end = !s.text && full ? full.slice(-3500) : ''
+      const voice = full ? voiceSample(full) : ''
       const seen = [...(phase.seen || [])]
       const ws = only ? WRITERS.filter((w) => w.id === only.by) : WRITERS
       const res = await Promise.allSettled(ws.map(async (w) => {
@@ -79,8 +84,8 @@ export default function Table({ app }) {
         if (!only) updPh(s.id, (p) => ({ ...p, opts: [...p.opts, { id: oid, by: w.id, plot: '', text: '', done: false }] }))
         else setOpt(s.id, oid, { plot: '', text: '', err: '', done: false })
         try {
-          const raw = await app.run(writerPrompt({ ctx, book: d?.name || '', end, s, ph: phase, seen }), {
-            system: `${SCRIBE}\n${w.p}`, temperature: 0.9, signal: ac.signal,
+          const raw = await app.run(writerPrompt({ ctx, book: d?.name || '', end, voice, s, ph: phase, seen }), {
+            system: systemOf(w), temperature: 0.9, signal: ac.signal,
             onText: (x) => setOpt(s.id, oid, parseDraft(x)), onModel: (m) => setOpt(s.id, oid, { m }),
           })
           const r = parseDraft(raw)
@@ -131,11 +136,34 @@ export default function Table({ app }) {
     if (busy || ph.chosen || !o.text) return
     if (!ph.learned) {
       const others = ph.opts.filter((x) => x.id !== o.id && x.text && !x.err)
-      app.learn({ picked: { by: o.by, text: o.plot || cut(o.text, 300) }, skipped: others.map((x) => ({ by: x.by, text: x.plot || cut(x.text, 200) })) })
+      app.learn({ picked: { by: o.by, text: o.plot || cut(o.text, 300) }, skipped: others.filter((x) => !x.no).map((x) => ({ by: x.by, text: x.plot || cut(x.text, 200) })) })
+      feedback(o.by, { ok: true, t: o.plot || cut(o.text, 300) })
+      others.filter((x) => !x.no).forEach((x) => feedback(x.by, { ok: false, t: x.plot || cut(x.text, 200) }))
+      grow(o.by)
     }
     updS(cur.id, (x) => ({ ...x, text: x.text ? `${x.text.trimEnd()}${SEP}${o.text}` : o.text, phases: x.phases.map((p) => (p.id === ph.id ? { ...p, chosen: o.id, base: x.text, learned: true } : p)) }))
     setNote(`Фаза ${cur.phases.length} выбрана: ${who(o.by).n}. Текст добавлен в рукопись.`)
   }
+  // «Не то, потому что…»: самый ценный урок. Идёт и писарю лично, и в общий вкус автора.
+  function reject(o) {
+    const t = (why[o.id] || '').trim()
+    if (!t) return
+    const plot = o.plot || cut(o.text, 200)
+    feedback(o.by, { ok: false, t: plot, why: t })
+    app.learn({ skipped: [{ by: o.by, text: `${plot} — автор: ${t}` }] })
+    setOpt(cur.id, o.id, { no: t })
+    setWhy((m) => { const n = { ...m }; delete n[o.id]; return n })
+    grow(o.by)
+  }
+  // Накопилось достаточно оценок: писарь в фоне пересобирает свои правила.
+  function grow(id) {
+    const w = WRITERS.find((x) => x.id === id)
+    if (!w || !ready(id) || learning.current.has(id)) return
+    learning.current.add(id)
+    distill(w, app.run).then((t) => t && setNote(`${w.n} обновил свои правила по вашим выборам. Их видно в «Настроить писарей».`)).catch(() => {})
+      .finally(() => { learning.current.delete(id); setTick((x) => x + 1) })
+  }
+
   function undo() {
     if (busy || !ph?.chosen) return
     const o = ph.opts.find((x) => x.id === ph.chosen)
@@ -180,6 +208,26 @@ export default function Table({ app }) {
       </div>
     )
   }
+  const setup = (
+    <details className="who-pick">
+      <summary>Настроить писарей: указания и чему они научились</summary>
+      <p className="muted small">Писари учатся на ваших выборах и на кнопке «Не то…». Чем точнее вы объясните, почему вариант не подошёл, тем быстрее они поймут суть. Самое важное о книге правьте в Библиотеке → «Суть книги».</p>
+      {WRITERS.map((w) => {
+        const p = prof(w.id), ok = p.fb.filter((f) => f.ok).length, no = p.fb.filter((f) => f.why).length
+        return (
+          <div key={w.id} className="wset" style={{ '--c': w.c }}>
+            <h4><Av w={w} size="sm" />{w.n}<small className="muted">выбран {ok} раз, замечаний {no}</small></h4>
+            <label className="fld"><span className="lbl">Ваши указания этому писарю</span>
+              <textarea rows={2} defaultValue={p.mine} placeholder="Например: больше диалогов, не убивай главных героев, держи темп как в боевике…" onBlur={(e) => { saveProf(w.id, { mine: e.target.value.trim() }); setTick((x) => x + 1) }} />
+            </label>
+            <label className="fld"><span className="lbl">Чему научился (можно поправить)</span>
+              <textarea key={p.notes} rows={3} defaultValue={p.notes} placeholder="Пока ничего: выбирайте варианты и объясняйте, что не так." onBlur={(e) => { saveProf(w.id, { notes: e.target.value.trim() }); setTick((x) => x + 1) }} />
+            </label>
+          </div>
+        )
+      })}
+    </details>
+  )
   const sizePick = (
     <label className="lbl inl">Объём фрагмента
       <select value={size} onChange={(e) => setSize(+e.target.value)} disabled={busy}>
@@ -204,6 +252,7 @@ export default function Table({ app }) {
           ) : <p className="empty-note">Библиотека пуста: писари начнут историю только по вашему пожеланию.</p>}
           <textarea rows={3} value={wish} onChange={(e) => setWish(e.target.value)} placeholder="Пожелание к продолжению (можно пусто): что должно произойти, чего избегать…" aria-label="Пожелание к продолжению" />
           {sizePick}
+          {setup}
           {err && <p className="err" role="alert">{err}</p>}
           <button className="go">Фаза 1: писари пишут</button>
         </form>
@@ -267,12 +316,20 @@ export default function Table({ app }) {
                 <h4><Av w={w} size="sm" />{w.n}{o.m && <small className="mdl">{short(o.m)}</small>}</h4>
                 {o.plot && <p className="plot">{o.plot}</p>}
                 {o.err && !o.text ? <p className="err">{o.err}</p> : <div className="txt">{o.text || (live ? 'Пишет…' : '')}{live && <span className="cur" />}</div>}
+                {o.no && <p className="muted small">Не то: {o.no}</p>}
                 {!busy && !ph.chosen && (
                   <div className="row">
                     {o.text && !o.err && <button className="go" onClick={() => choose(o)}>Выбрать этот вариант</button>}
+                    {o.text && !o.err && !o.no && why[o.id] === undefined && <button className="ghost sm" onClick={() => setWhy((m) => ({ ...m, [o.id]: '' }))}>Не то…</button>}
                     {(o.err || !o.text) && <button className="ghost sm" onClick={() => retry(o)}>Повторить</button>}
                     {o.text && <small className="muted">{o.text.length} знаков</small>}
                   </div>
+                )}
+                {!busy && !ph.chosen && why[o.id] !== undefined && (
+                  <form className="row own" onSubmit={(e) => { e.preventDefault(); reject(o) }}>
+                    <input autoFocus value={why[o.id]} onChange={(e) => setWhy((m) => ({ ...m, [o.id]: e.target.value }))} placeholder="Почему не то? Например: герой так бы не поступил, слишком быстро…" aria-label={`Почему не подошёл вариант: ${w.n}`} />
+                    <button className="ghost sm" disabled={!why[o.id].trim()}>Запомнить</button>
+                  </form>
                 )}
               </article>
             )
@@ -287,6 +344,7 @@ export default function Table({ app }) {
               {sizePick}
               <button className={ph.chosen ? 'go' : 'ghost'}>{ph.chosen ? `Фаза ${cur.phases.length + 1}: писари пишут дальше` : 'Ещё 4 варианта'}</button>
             </div>
+            {setup}
           </form>
         )}
       </div>

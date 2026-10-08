@@ -79,6 +79,23 @@ export function styleStats(text) {
   }
 }
 
+// Образец голоса автора: кусок книги с самым плотным диалогом и действием (не из самого конца,
+// конец писари и так получают). По нему модели копируют манеру, а не пересказ правил стиля.
+export function voiceSample(text, size = 2500, skipTail = 4000) {
+  const n = Math.max(0, text.length - skipTail)
+  let best = '', bs = -1
+  for (let p = 0; p + 500 < n; p += 1500) {
+    const a = text.lastIndexOf('\n', p) + 1
+    let t = text.slice(a, Math.min(n, a + size))
+    // Обрезаем по концу абзаца, а если он далеко, по концу фразы, чтобы образец не обрывался на полуслове.
+    const nl = t.lastIndexOf('\n'), dot = t.search(/[.!?…»][^.!?…»]*$/)
+    t = nl > size * 0.6 ? t.slice(0, nl) : dot > size * 0.6 ? t.slice(0, dot + 1) : t
+    const s = (t.match(/^\s*[—–]\s/gm) || []).length * 2 + (t.match(/\n/g) || []).length
+    if (s > bs) { bs = s; best = t }
+  }
+  return best.trim()
+}
+
 export const stemsOf = (q) => [...new Set((String(q).toLowerCase().match(/[a-zа-яё]{4,}/g) || []).map((w) => w.slice(0, 5)))]
 // Оценка совпадения: важнее, сколько РАЗНЫХ слов вопроса нашлось, чем сколько раз встретилось одно имя.
 export function score(text, stems) {

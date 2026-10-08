@@ -5,13 +5,13 @@ import { splitUnits } from '../lib/text'
 import { seriesDocs } from '../lib/context'
 import { docGet } from '../lib/store'
 
-const FIELDS = [['brief', 'О чём книга'], ['characters', 'Герои и их арки'], ['world', 'Мир и правила'], ['threads', 'Незакрытые линии'], ['timeline', 'Хронология'], ['issues', 'Несостыковки (проверка канона)'], ['style', 'Стиль автора (правьте под себя)']]
+const FIELDS = [['core', 'Суть книги: главное для помощников (правьте под себя, это важнее всего)'], ['brief', 'О чём книга'], ['characters', 'Герои и их арки'], ['world', 'Мир и правила'], ['threads', 'Незакрытые линии'], ['timeline', 'Хронология'], ['issues', 'Несостыковки (проверка канона)'], ['style', 'Стиль автора (правьте под себя)']]
 const SFIELDS = [['brief', 'Сквозной сюжет цикла'], ['characters', 'Сквозные герои и арки через книги'], ['world', 'Правила мира цикла'], ['threads', 'Незакрытые линии цикла'], ['timeline', 'Хронология цикла'], ['issues', 'Несостыковки между книгами']]
-const PHASE = { chapters: 'главы', summary: 'библия книги', check: 'проверка несостыковок', style: 'стиль', series: 'библия цикла', seriesCheck: 'проверка цикла', memory: 'обновляю память сюжета', done: 'готово' }
+const PHASE = { chapters: 'главы', summary: 'библия книги', check: 'проверка несостыковок', style: 'стиль', essence: 'суть книги', series: 'библия цикла', seriesCheck: 'проверка цикла', memory: 'обновляю память сюжета', done: 'готово' }
 // Что сейчас делает изучение: фаза, номер главы и «жду модель», если все заняты или упёрлись в лимит.
 const now = (job) => `${PHASE[job.phase] || ''}${job.phase === 'chapters' && job.n ? ` ${job.i + 1} из ${job.n}` : ''}${job.wait > Date.now() ? ', жду свободную модель (до 2–3 мин)…' : ''}`
 const KIND = { link: 'ссылка', draft: 'ваш черновик', folder: 'папка' }
-const rows = (f) => (['characters', 'threads', 'timeline', 'issues'].includes(f) ? 8 : f === 'style' ? 8 : 4)
+const rows = (f) => (['core', 'characters', 'threads', 'timeline', 'issues'].includes(f) ? 8 : f === 'style' ? 8 : 4)
 
 // Оценка запросов: глава читается целиком (длинная — частями), плюс библия, проверка, стиль и запас на повторы.
 async function estimate(docs, bibles) {

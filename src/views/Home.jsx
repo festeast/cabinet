@@ -16,7 +16,7 @@ function useTyped(text) {
   return text.slice(0, n)
 }
 
-const PHASE = { chapters: 'читаю главы', memory: 'обновляю память сюжета', summary: 'собираю героев и сюжет', check: 'проверяю несостыковки', style: 'изучаю ваш стиль', series: 'собираю библию цикла', seriesCheck: 'проверяю цикл', done: 'готово' }
+const PHASE = { chapters: 'читаю главы', memory: 'обновляю память сюжета', summary: 'собираю героев и сюжет', check: 'проверяю несостыковки', style: 'изучаю ваш стиль', essence: 'понимаю суть книги', series: 'собираю библию цикла', seriesCheck: 'проверяю цикл', done: 'готово' }
 
 export default function Home({ app, go }) {
   const { lib, bibles, job } = app
