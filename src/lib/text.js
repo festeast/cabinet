@@ -1,19 +1,43 @@
 // Чистые функции работы с текстом: главы, фрагменты, цифры стиля, разбор JSON от модели.
+// Заголовок главы: «Глава 5», «Глава V», «Глава пятая», «Chapter 3», «Часть 2», «Пролог», «Эпилог».
+// Строка «Глава семьи кивнул.» — это текст, а не заголовок: после слова «глава» нужен номер.
+const ORD = '(?:перв|втор|трет|четв[её]рт|пят|шест|седьм|восьм|девят|десят|одиннадцат|двенадцат|тринадцат|четырнадцат|пятнадцат|шестнадцат|семнадцат|восемнадцат|девятнадцат|двадцат|тридцат|сороков|пятидесят|шестидесят|семидесят|восьмидесят|девяност|сот|one|two|three|four|five|six|seven|eight|nine|ten)\\p{L}*'
+const HEAD = new RegExp(`^[ \\t]*((?:(?:глава|chapter|часть|part)[ \\t]*(?:№[ \\t]*)?(?:\\d+|[IVXLC]+(?![\\p{L}\\p{N}])|${ORD})|пролог|эпилог|prologue|epilogue)(?![\\p{L}\\p{N}_])[^\\n]{0,80})$`, 'gimu')
+
 export function chaptersOf(text) {
-  // \b в JS не работает с кириллицей, поэтому граница слова задана через \p{L}.
-  const re = /^[ \t]*((?:глава|chapter|пролог|эпилог|часть(?=[ \t]+[\dIVX]))(?![\p{L}\p{N}_])[^\n]{0,80})$/gimu
   const out = []
   let m
-  while ((m = re.exec(text))) out.push({ title: m[1].trim(), at: m.index })
+  HEAD.lastIndex = 0
+  while ((m = HEAD.exec(text))) {
+    const t = m[1].trim()
+    // «Пролог» и «Эпилог» — заголовок, только если строка короткая, а не начало обычной фразы.
+    if (/^(?:пролог|эпилог|prologue|epilogue)/i.test(t) && (t.length > 60 || /[.!?…]$/.test(t) && t.split(/\s+/).length > 6)) continue
+    out.push({ title: t, at: m.index })
+  }
   return out.length > 1 ? out : []
 }
 
-// Единицы анализа: главы, а если заголовков нет, куски по ~7000 знаков.
+// Единицы анализа: главы, а если заголовков нет, куски по ~7000 знаков, разрезанные по границе абзаца,
+// чтобы фраза и сцена не обрывались посередине.
 export function splitUnits(text, size = 7000) {
   const ch = chaptersOf(text)
-  if (ch.length) return ch.map((c, i) => ({ title: c.title, text: text.slice(c.at, ch[i + 1]?.at ?? text.length) }))
+  if (ch.length) {
+    const units = ch.map((c, i) => ({ title: c.title, text: text.slice(c.at, ch[i + 1]?.at ?? text.length) }))
+    // Текст до первой главы (аннотация, предисловие) тоже часть книги.
+    const pre = text.slice(0, ch[0].at)
+    return pre.trim().length > 500 ? [{ title: 'Начало', text: pre }, ...units] : units
+  }
   const out = []
-  for (let p = 0, i = 1; p < text.length; p += size, i++) out.push({ title: `Часть ${i}`, text: text.slice(p, p + size) })
+  for (let p = 0, i = 1; p < text.length; i++) {
+    let e = Math.min(text.length, p + size)
+    if (e < text.length) {
+      const nl = text.lastIndexOf('\n', e)
+      if (nl > p + size * 0.6) e = nl + 1
+      else { const dot = text.slice(p, e).search(/[.!?…][^.!?…]*$/); if (dot > size * 0.6) e = p + dot + 1 }
+    }
+    out.push({ title: `Часть ${i}`, text: text.slice(p, e) })
+    p = e
+  }
   return out
 }
 

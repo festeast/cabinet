@@ -131,10 +131,14 @@ async function attempt(key, prompt, o) {
   const need = tokensOf(prompt) + tokensOf(system) + 3000
   const roomy = models.filter((m) => !m.ctx || m.ctx >= need)
   const pool = (roomy.length ? roomy : models).map((m) => m.id)
-  const list = auto ? alive(pool).sort((a, b) => (st[a]?.t ?? 6000) - (st[b]?.t ?? 6000)).slice(0, patient ? 6 : 4) : [model]
+  let list = auto ? alive(pool).sort((a, b) => (st[a]?.t ?? 6000) - (st[b]?.t ?? 6000)).slice(0, patient ? 6 : 4) : [model]
   if (!list.length && paidOn) return goPaid()
   if (!list.length) throw new Error('Нет доступных бесплатных моделей: список не загрузился или все отключены.')
-  const from = auto ? rot++ : 0
+  // Изучение книги ведёт одна и та же модель, пока она отвечает: когда главы читают разные модели,
+  // разборы расходятся в именах и выводах. Поэтому без чередования, первой идёт прошлая удачная.
+  const sticky = patient && auto && ls.get('cab_study_m', '')
+  if (sticky && list.includes(sticky)) list = [sticky, ...list.filter((x) => x !== sticky)]
+  const from = auto && !patient ? rot++ : 0
   let last, lim = false
   for (let k = 0; k < list.length; k++) {
     const id = list[(from + k) % list.length], t0 = Date.now()
@@ -143,6 +147,7 @@ async function attempt(key, prompt, o) {
       const t = await stream(key, id, prompt, onText, signal, auto ? (patient ? 180000 : need > 12000 ? 60000 : 30000) : 0, gen)
       if (!t.trim()) throw new Error('Модель ничего не ответила.')
       note(id, true, Date.now() - t0)
+      if (patient && auto) ls.set('cab_study_m', id)
       return t
     } catch (e) {
       if (signal?.aborted || e.status === 401) throw e

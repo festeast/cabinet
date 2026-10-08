@@ -1,10 +1,10 @@
 // Контекст для помощников: библия цикла и книги, подходящие к вопросу главы, стиль, вкус и уроки автора.
 // Именно он заменяет «обучение»: всё, что изучено и выбрано, попадает в каждый запрос.
-import { HELPERS } from './agents'
+import { who } from './agents'
 import { cut, stemsOf, score } from './text'
 import { chapterLine } from './bible'
 
-const hname = (id) => (id === 'me' ? 'сам автор' : HELPERS.find((h) => h.id === id)?.n || id)
+const hname = (id) => (id === 'me' ? 'сам автор' : who(id).n)
 export const LIMIT = 26000
 
 export function tasteText(taste) {

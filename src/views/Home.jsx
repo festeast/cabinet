@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { HELPERS, CORE } from '../lib/agents'
+import { WRITERS, CORE } from '../lib/agents'
 import { doneCount } from '../lib/bible'
 import { config } from '../config'
 import Av from './Av'
@@ -35,11 +35,11 @@ export default function Home({ app, go }) {
       <p className="greet" aria-label={text}><span aria-hidden="true">{typed}<i className="cur" /></span></p>
       <div className="orbit">
         <i className="ring c" aria-hidden="true" />
-        <button className="core" onClick={() => go('table')} aria-label="Эхо: круглый стол со всеми помощниками">
+        <button className="core" onClick={() => go('table')} aria-label="Эхо: круглый стол писарей">
           <EchoWave level={job ? 1 : 0} /><span>{CORE.n}</span>
         </button>
-        {HELPERS.map((x, i) => (
-          <button key={x.id} className="node" style={{ '--a': `${i * (360 / HELPERS.length)}deg`, '--c': x.c }} onClick={() => go('table', { pick: [x.id] })} title={`Спросить: ${x.n}`}>
+        {WRITERS.map((x, i) => (
+          <button key={x.id} className="node" style={{ '--a': `${i * (360 / WRITERS.length)}deg`, '--c': x.c }} onClick={() => go('table')} title={`Круглый стол: ${x.n}`}>
             <Av w={x} /><b>{x.n}</b>
           </button>
         ))}

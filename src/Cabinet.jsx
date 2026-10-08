@@ -298,7 +298,7 @@ export default function Cabinet() {
       <div className="view">
         {nav.view === 'home' && <Home app={app} go={go} />}
         {nav.view === 'library' && <Library app={app} />}
-        {nav.view === 'table' && <Table key={nav.arg?.pick?.join() || 'all'} app={app} arg={nav.arg} toChapter={(a) => go('chapter', a)} />}
+        {nav.view === 'table' && <Table app={app} />}
         {nav.view === 'chapter' && <Chapter key={nav.arg?.brief || 'c'} app={app} arg={nav.arg} go={go} />}
       </div>
     </div>

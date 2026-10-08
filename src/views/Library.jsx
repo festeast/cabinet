@@ -107,7 +107,7 @@ export default function Library({ app }) {
       <div key={d.id} className="doc col">
         <div className="row top">
           <label className="chk"><input type="checkbox" checked={d.on !== false} onChange={() => app.toggleDoc(d.id)} aria-label={`Книга «${d.name}» доступна помощникам`} /></label>
-          <span className="grow"><b>{inSeries ? `Часть ${pos + 1}. ` : ''}{d.name}</b><small>{KIND[d.kind] || 'файл'}{d.files > 1 ? ` из ${d.files} файлов` : ''}, {Math.round(d.size / 1000)} тыс. знаков, {b ? `изучено ${k} из ${n}${shallow ? ' (кратко)' : ''}` : 'не изучена'}{mine ? `, сейчас: ${now(job)}` : ''}</small></span>
+          <span className="grow"><b>{inSeries ? `Часть ${pos + 1}. ` : ''}{d.name}</b><small>{KIND[d.kind] || 'файл'}{d.files > 1 ? ` из ${d.files} файлов` : ''}, {Math.round(d.size / 1000)} тыс. знаков, {b ? `изучено ${k} из ${n}${shallow ? ' (старый разбор)' : ''}` : 'не изучена'}{mine ? `, сейчас: ${now(job)}` : ''}</small></span>
           {inSeries && <span className="row">
             <button className="ghost sm" disabled={pos === 0 || !!job} onClick={() => app.moveDoc(d.id, -1)} aria-label="Выше в цикле">↑</button>
             <button className="ghost sm" disabled={pos === g.length - 1 || !!job} onClick={() => app.moveDoc(d.id, 1)} aria-label="Ниже в цикле">↓</button>
@@ -115,7 +115,7 @@ export default function Library({ app }) {
           {mine && !job.series
             ? <button className="ghost" onClick={app.stopStudy}>Остановить</button>
             : <button className="ghost" disabled={!!job} onClick={() => study(d)}>{b && k === n && b.brief && !shallow ? 'Доизучить' : k && !shallow ? 'Продолжить изучение' : 'Изучить'}</button>}
-          {b && <button className="ghost" disabled={!!job} onClick={() => study(d, true)} title="Подробный разбор каждой главы целиком">{shallow ? 'Переизучить подробно' : 'Заново'}</button>}
+          {b && <button className="ghost" disabled={!!job} onClick={() => study(d, true)} title="Подробный разбор каждой главы целиком">{shallow ? 'Переизучить точнее' : 'Заново'}</button>}
           <button className="ghost" disabled={mine} onClick={() => app.removeDoc(d.id)}>Убрать</button>
         </div>
         {b && n > 0 && <span className="bar" aria-hidden="true"><i style={{ width: `${Math.round((k / n) * 100)}%` }} /></span>}
