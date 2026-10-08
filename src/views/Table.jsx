@@ -1,126 +1,189 @@
 import { useEffect, useRef, useState } from 'react'
-import { HELPERS, who, BASE, RULE, INTRO, SUM } from '../lib/agents'
-import { ls, uid } from '../lib/store'
+import { WRITERS, SCRIBE, who } from '../lib/agents'
+import { ls, uid, docGet } from '../lib/store'
 import { short } from '../lib/ai'
+import { textDoc } from '../lib/books'
+import { cut } from '../lib/text'
 import Av from './Av'
 import EchoWave from './EchoWave'
-import Chips from './Chips'
 
-export default function Table({ app, arg, toChapter }) {
-  const [sessions, setSessions] = useState(() => ls.get('cab_tables', []))
+// Круглый стол писарей: в каждой фазе четыре писаря пишут готовый фрагмент продолжения
+// (каждый в своём направлении сюжета), автор выбирает один, и следующая фаза продолжает уже его.
+const SIZES = [2000, 3000, 5000]
+const words = (n) => Math.round(n / 6.5)
+const SEP = '\n\n'
+
+// Ответ писаря: «Сюжет: …», затем «---» и сам текст. Разбираем и на лету, пока текст пишется.
+function parseDraft(raw) {
+  const m = raw.match(/^\s*\**\s*Сюжет\s*\**\s*[:：]\s*\**\s*([^\n]+)\n?/i)
+  if (!m) return { plot: '', text: raw.trim() }
+  return { plot: m[1].replace(/\*+/g, '').trim(), text: raw.slice(m[0].length).replace(/^\s*(?:[-—–*_]{3,}|\*\*\*)\s*\n/, '').trim() }
+}
+
+function writerPrompt({ ctx, book, end, s, ph, seen }) {
+  const story = s.phases.filter((p) => p !== ph && p.chosen).map((p, k) => `${k + 1}. ${p.opts.find((o) => o.id === p.chosen)?.plot || ''}`).join('\n')
+  const where = s.text
+    ? `[Уже написанное продолжение, его конец: продолжай сразу после последней фразы]\n${s.text.length > 4500 ? `…${s.text.slice(-4500)}` : s.text}`
+    : end
+      ? `[Конец книги «${book}»: продолжение начинается сразу после последней фразы]\n…${end}`
+      : '[Текста книги нет: начни историю по пожеланию автора и материалам]'
+  return `${ctx}
+
+${where}
+${story ? `\n[Как сюжет уже развивался в прошлых фазах]\n${story}\n` : ''}
+[Пожелание автора к этой фазе]
+${ph.wish || 'нет: выбери направление сам, исходя из канона и незакрытых линий'}
+${seen.length ? `\n[Эти направления уже предлагали, придумай другое]\n${seen.map((t) => `- ${cut(t, 160)}`).join('\n')}\n` : ''}
+Напиши следующий фрагмент книги объёмом около ${s.size} знаков (примерно ${words(s.size)} слов) в своём направлении сюжета. Продолжай ровно с места, где текст оборвался: не пересказывай и не повторяй написанное, не начинай заново. Сюжет должен заметно сдвинуться, но не завершай историю всей книги.
+Ответ строго в таком виде:
+Сюжет: одно предложение о том, куда ты ведёшь историю в этом фрагменте
+---
+текст фрагмента`
+}
+
+export default function Table({ app }) {
+  const [sessions, setSessions] = useState(() => ls.get('cab_desk', []))
   const [sid, setSid] = useState(null)
-  const [pick, setPick] = useState(arg?.pick || HELPERS.map((h) => h.id))
-  const [topic, setTopic] = useState('')
-  const [q, setQ] = useState('')
-  const [fast, setFast] = useState(() => ls.get('cab_fast', true))
+  const [wish, setWish] = useState('')
+  const [size, setSize] = useState(() => ls.get('cab_desk_size', 3000))
   const [busy, setBusy] = useState(false)
-  const [speaking, setSpeaking] = useState('')
   const [err, setErr] = useState('')
+  const [note, setNote] = useState('')
+  const [showText, setShowText] = useState(false)
   const ctl = useRef(null)
-  const feed = useRef(null)
   const cur = sessions.find((s) => s.id === sid)
+  const ph = cur?.phases[cur.phases.length - 1]
+  const book = app.lib.find((d) => d.id === (cur?.bookId || app.active))
 
-  useEffect(() => { if (!busy) ls.set('cab_tables', sessions.slice(0, 30)) }, [sessions, busy])
-  useEffect(() => { ls.set('cab_fast', fast) }, [fast])
-  useEffect(() => { if (feed.current) feed.current.scrollTop = feed.current.scrollHeight }, [sessions, sid])
+  useEffect(() => { if (!busy) ls.set('cab_desk', sessions.slice(0, 15)) }, [sessions, busy])
+  useEffect(() => { ls.set('cab_desk_size', size) }, [size])
+  const updS = (id, fn) => setSessions((ss) => ss.map((x) => (x.id === id ? fn(x) : x)))
+  const updPh = (id, fn) => updS(id, (x) => ({ ...x, phases: x.phases.map((p, k) => (k === x.phases.length - 1 ? fn(p) : p)) }))
+  const setOpt = (id, oid, patch) => updPh(id, (p) => ({ ...p, opts: p.opts.map((o) => (o.id === oid ? { ...o, ...patch } : o)) }))
 
-  async function runRound(id, question, base) {
-    const ids = HELPERS.filter((h) => pick.includes(h.id))
-    setBusy(true); setErr('')
+  // Все писари пишут одновременно: контекст книги собирается один раз на фазу.
+  async function write(s, phase, only) {
+    setBusy(true); setErr(''); setNote('')
     const ac = new AbortController(); ctl.current = ac
-    const tr = [...base.turns]
-    let context = ''
-    const upd = (fn) => setSessions((s) => s.map((x) => (x.id === id ? { ...x, turns: fn(x.turns) } : x)))
-    const set = (i, patch) => { Object.assign(tr[i], patch); upd((ts) => { const a = [...ts]; a[i] = { ...a[i], ...patch }; return a }) }
-    const add = (t) => { tr.push({ ...t }); upd((ts) => [...ts, { ...t }]); return tr.length - 1 }
-    const say = async (w, kind, instr, upto, temperature = 0.8) => {
-      const i = add({ who: w, kind, text: '' })
-      setSpeaking(upto !== undefined ? 'all' : w)
-      const u = upto ?? i
-      const hist = tr.slice(Math.max(0, u - 16), u).filter((t) => t.kind !== 'src').map((t) => `${who(t.who).n}: ${t.text.slice(0, 600)}`).join('\n')
-      // Роль и правила — в system, материалы книги и ход обсуждения — в запросе.
-      const prompt = `${context}\n\n[Ход обсуждения]\n${hist}\n\nТвоя реплика (${who(w).n}):`
-      try {
-        const t = await app.run(prompt, { system: `${BASE}\n${instr}`, temperature, signal: ac.signal, onText: (x) => set(i, { text: x }), onModel: (m) => set(i, { m }) })
-        if (!t.trim()) throw new Error('Модель ничего не ответила.')
-      } catch (e) {
-        if (!tr[i].text) set(i, { text: e.name === 'AbortError' ? 'Остановлено' : `Не смог ответить: ${e.message || 'ошибка'}` })
-        throw e
-      } finally { set(i, { done: true }) }
-    }
     try {
-      add({ who: 'me', kind: 'q', text: question })
-      const c = await app.ctx(question, { passages: true })
-      context = c.text
-      if (c.used.length) add({ who: 'core', kind: 'src', text: `Из книги взято: ${c.used.join('; ')}` })
-      await say('core', 'mod', INTRO, undefined, 0.4)
-      if (fast) {
-        const upto = tr.length
-        const res = await Promise.allSettled(ids.map((a) => say(a.id, 'adv', `${a.p}\n${RULE}`, upto)))
-        const bad = res.find((r) => r.status === 'rejected')
-        if (bad && ac.signal.aborted) throw bad.reason
-        if (bad) setErr(bad.reason.message)
-      } else for (const a of ids) await say(a.id, 'adv', `${a.p}\n${RULE}`)
-      await say('core', 'sum', SUM, undefined, 0.4)
+      const last = s.phases.filter((p) => p.chosen).pop()
+      const q = [phase.wish, last?.opts.find((o) => o.id === last.chosen)?.plot, s.wish].filter(Boolean).join(' ')
+      const ctx = (await app.ctx(q, { book: s.bookId, sample: true })).text
+      const d = app.lib.find((x) => x.id === s.bookId)
+      const full = !s.text && d ? await docGet(d.id).catch(() => '') : ''
+      const end = full ? full.slice(-3500) : ''
+      const seen = [...(phase.seen || [])]
+      const ws = only ? WRITERS.filter((w) => w.id === only.by) : WRITERS
+      const res = await Promise.allSettled(ws.map(async (w) => {
+        const oid = only?.id || uid()
+        if (!only) updPh(s.id, (p) => ({ ...p, opts: [...p.opts, { id: oid, by: w.id, plot: '', text: '', done: false }] }))
+        else setOpt(s.id, oid, { plot: '', text: '', err: '', done: false })
+        try {
+          const raw = await app.run(writerPrompt({ ctx, book: d?.name || '', end, s, ph: phase, seen }), {
+            system: `${SCRIBE}\n${w.p}`, temperature: 0.9, signal: ac.signal,
+            onText: (x) => setOpt(s.id, oid, parseDraft(x)), onModel: (m) => setOpt(s.id, oid, { m }),
+          })
+          const r = parseDraft(raw)
+          if (r.text.length < 200) throw new Error('Писарь прислал слишком короткий текст.')
+          setOpt(s.id, oid, { ...r, done: true })
+        } catch (e) {
+          setOpt(s.id, oid, { done: true, err: e.name === 'AbortError' ? 'Остановлено' : e.message || 'ошибка' })
+          throw e
+        }
+      }))
+      const bad = res.filter((r) => r.status === 'rejected')
+      if (bad.length && !ac.signal.aborted) setErr(bad.length === ws.length ? bad[0].reason.message : `Не дописали: ${bad.length} из ${ws.length}. Их можно повторить.`)
     } catch (e) { if (e.name !== 'AbortError') setErr(e.message || 'Сбой сети') }
-    setSpeaking(''); setBusy(false)
+    setBusy(false)
   }
 
   function start(e) {
     e.preventDefault()
-    const t = topic.trim()
-    if (!t || busy || !pick.length) return
-    const s = { id: uid(), title: t.slice(0, 60), created: Date.now(), turns: [] }
-    setSessions((x) => [s, ...x]); setSid(s.id); setTopic('')
-    runRound(s.id, t, s)
+    if (busy) return
+    const w = wish.trim()
+    const phase = { id: uid(), wish: w, opts: [], chosen: null, seen: [] }
+    const name = app.lib.find((d) => d.id === app.active)?.name
+    const s = { id: uid(), title: cut(w || `Продолжение «${name || 'книги'}»`, 60), bookId: app.active, wish: w, size, text: '', phases: [phase], created: Date.now() }
+    setSessions((x) => [s, ...x]); setSid(s.id); setWish(''); setShowText(false)
+    write(s, phase)
   }
-  function ask(e) {
+  // Следующая фаза: варианты прошлой больше не нужны целиком, оставляем только выбранный.
+  function next(e) {
     e.preventDefault()
-    const v = q.trim()
-    if (!v || busy || !pick.length) return
-    setQ(''); runRound(cur.id, v, cur)
+    if (busy || !ph?.chosen) return
+    const phase = { id: uid(), wish: wish.trim(), opts: [], chosen: null, seen: [] }
+    const s = { ...cur, size, phases: [...cur.phases.map((p) => ({ ...p, opts: p.opts.filter((o) => o.id === p.chosen) })), phase] }
+    updS(cur.id, () => s); setWish('')
+    write(s, phase)
   }
-  // Оценка реплики учит помощников так же, как выбор хода в мастерской главы.
-  function rate(i, v) {
-    const t = cur.turns[i]
-    if (!t || t.fb) return
-    const o = { by: t.who, text: t.text.slice(0, 400) }
-    app.learn(v > 0 ? { picked: o } : { skipped: [o] })
-    setSessions((s) => s.map((x) => (x.id === cur.id ? { ...x, turns: x.turns.map((y, k) => (k === i ? { ...y, fb: v } : y)) } : x)))
+  // Ещё четыре варианта той же фазы: прежние направления писари не повторяют.
+  function more() {
+    if (busy || ph.chosen) return
+    const phase = { ...ph, wish: wish.trim() || ph.wish, opts: [], seen: [...(ph.seen || []), ...ph.opts.map((o) => o.plot || cut(o.text, 160)).filter(Boolean)].slice(-12) }
+    const s = { ...cur, size, phases: [...cur.phases.slice(0, -1), phase] }
+    updS(cur.id, () => s); setWish('')
+    write(s, phase)
   }
-  // Кто говорит прямо сейчас: реплика последнего круга, которая ещё пишется.
-  const recent = (k) => cur && k >= cur.turns.length - pick.length - 2
-  const isLive = (id) => busy && !!cur?.turns.some((t, k) => t.who === id && !t.done && recent(k))
-  // Сцена стола: Эхо-линия в центре, места помощников вокруг; говорящий подсвечивается.
+  const retry = (o) => { if (!busy) write({ ...cur, size }, ph, o) }
+
+  // Выбор варианта: текст встаёт в рукопись, а выбор и отвергнутые соседи учат вкус автора.
+  function choose(o) {
+    if (busy || ph.chosen || !o.text) return
+    if (!ph.learned) {
+      const others = ph.opts.filter((x) => x.id !== o.id && x.text && !x.err)
+      app.learn({ picked: { by: o.by, text: o.plot || cut(o.text, 300) }, skipped: others.map((x) => ({ by: x.by, text: x.plot || cut(x.text, 200) })) })
+    }
+    updS(cur.id, (x) => ({ ...x, text: x.text ? `${x.text.trimEnd()}${SEP}${o.text}` : o.text, phases: x.phases.map((p) => (p.id === ph.id ? { ...p, chosen: o.id, base: x.text, learned: true } : p)) }))
+    setNote(`Фаза ${cur.phases.length} выбрана: ${who(o.by).n}. Текст добавлен в рукопись.`)
+  }
+  function undo() {
+    if (busy || !ph?.chosen) return
+    const o = ph.opts.find((x) => x.id === ph.chosen)
+    const clean = cur.text === (ph.base ? `${ph.base.trimEnd()}${SEP}${o?.text}` : o?.text)
+    if (!clean && !confirm('Рукопись правилась после выбора. Вернуть её к состоянию до этой фазы?')) return
+    updS(cur.id, (x) => ({ ...x, text: ph.base || '', phases: x.phases.map((p) => (p.id === ph.id ? { ...p, chosen: null } : p)) }))
+    setNote('')
+  }
+
+  async function toLib() {
+    const { meta, text } = textDoc(`${book?.name || 'Книга'}: ${cur.title} (круглый стол)`, cur.text, 'draft')
+    await app.addDoc(meta, text)
+    setNote('Рукопись добавлена в библиотеку. Нажмите там «Изучить», чтобы помощники знали и этот текст.')
+  }
+  const copy = async () => { try { await navigator.clipboard.writeText(cur.text); setNote('Скопировано.') } catch { setNote('Не удалось скопировать: выделите текст вручную.') } }
+  const save = () => {
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([cur.text], { type: 'text/plain;charset=utf-8' }))
+    a.download = `${cur.title}.txt`; a.click(); URL.revokeObjectURL(a.href)
+  }
+  const del = (id) => { if (confirm('Удалить эту рукопись круглого стола?')) setSessions((s) => s.filter((x) => x.id !== id)) }
+
+  // Сцена стола: Эхо в центре, четыре писаря вокруг; пишущие сейчас подсвечиваются.
   function stage(compact = false) {
-    const seats = HELPERS.filter((h) => pick.includes(h.id))
-    const level = isLive('core') ? 2 : busy ? 1 : 0
+    const live = new Set(busy && ph ? ph.opts.filter((o) => !o.done).map((o) => o.by) : [])
     return (
       <div className={`stage${compact ? ' compact' : ''}`}>
         <div className="seats">
-          {seats.map((h, i) => {
-            const on = isLive(h.id)
-            const a = ((-90 + (i * 360) / seats.length) * Math.PI) / 180
+          {WRITERS.map((h, i) => {
+            const a = ((-90 + (i * 360) / WRITERS.length) * Math.PI) / 180
             return (
-              <span key={h.id} className={`seat${on ? ' on' : ''}`} style={{ '--c': h.c, '--x': `${50 + 41 * Math.cos(a)}%`, '--y': `${50 + 36 * Math.sin(a)}%` }} title={h.n}>
+              <span key={h.id} className={`seat${live.has(h.id) ? ' on' : ''}`} style={{ '--c': h.c, '--x': `${50 + 41 * Math.cos(a)}%`, '--y': `${50 + 36 * Math.sin(a)}%` }} title={h.n}>
                 <Av w={h} /><small>{h.n}</small>
               </span>
             )
           })}
         </div>
-        <div className={`echo-center${level === 2 ? ' on' : ''}`}>
-          <EchoWave level={level} label={level === 2 ? 'Эхо говорит' : level ? 'Помощники говорят' : 'Эхо слушает'} />
+        <div className="echo-center">
+          <EchoWave level={busy ? 1 : 0} label={busy ? 'Писари пишут' : 'Эхо слушает'} />
           <b>Эхо</b>
         </div>
       </div>
     )
   }
-  const del = (id) => { if (confirm('Удалить это обсуждение?')) setSessions((s) => s.filter((x) => x.id !== id)) }
-
-  const books = app.lib.length > 0 && (
-    <label className="bookpick"><span className="lbl">Книга в работе</span>
-      <select value={app.active} onChange={(e) => app.setActive(e.target.value)} disabled={busy} aria-label="Книга в работе">
-        {app.lib.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+  const sizePick = (
+    <label className="lbl inl">Объём фрагмента
+      <select value={size} onChange={(e) => setSize(+e.target.value)} disabled={busy}>
+        {SIZES.map((n) => <option key={n} value={n}>~{n} знаков</option>)}
       </select>
     </label>
   )
@@ -128,23 +191,29 @@ export default function Table({ app, arg, toChapter }) {
   if (!cur) {
     return (
       <div className="page">
-        <h2>Круглый стол</h2>
+        <h2>Круглый стол писарей</h2>
+        <p className="muted">Четыре писаря пишут по готовому фрагменту продолжения, каждый в своём направлении сюжета. Вы выбираете вариант, и следующая фаза продолжает уже его.</p>
         {stage()}
         <form onSubmit={start} className="stack">
-          <textarea rows={4} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="Идея, вопрос или «как продолжить главу 12»…" aria-label="Тема обсуждения" />
-          {books}
-          <p className="lbl">Кто участвует</p>
-          <Chips pick={pick} setPick={setPick} />
+          {app.lib.length > 0 ? (
+            <label className="bookpick"><span className="lbl">Книга, которую продолжаем</span>
+              <select value={app.active} onChange={(e) => app.setActive(e.target.value)} aria-label="Книга">
+                {app.lib.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </label>
+          ) : <p className="empty-note">Библиотека пуста: писари начнут историю только по вашему пожеланию.</p>}
+          <textarea rows={3} value={wish} onChange={(e) => setWish(e.target.value)} placeholder="Пожелание к продолжению (можно пусто): что должно произойти, чего избегать…" aria-label="Пожелание к продолжению" />
+          {sizePick}
           {err && <p className="err" role="alert">{err}</p>}
-          <button className="go" disabled={!topic.trim() || !pick.length}>Начать обсуждение</button>
+          <button className="go">Фаза 1: писари пишут</button>
         </form>
         {sessions.length > 0 && (
           <div className="prev">
-            <h3>Продолжить прошлый разговор</h3>
-            {sessions.slice(0, 5).map((s) => (
+            <h3>Продолжить рукопись</h3>
+            {sessions.slice(0, 6).map((s) => (
               <div key={s.id} className="sess">
-                <button onClick={() => setSid(s.id)}><b>{s.title}</b><small>{new Date(s.created).toLocaleDateString('ru-RU')}, реплик: {s.turns.length}</small></button>
-                <button className="ghost" onClick={() => del(s.id)} aria-label="Удалить обсуждение">Удалить</button>
+                <button onClick={() => { setSid(s.id); setNote(''); setErr('') }}><b>{s.title}</b><small>{new Date(s.created).toLocaleDateString('ru-RU')}, фаз: {s.phases.filter((p) => p.chosen).length}, {Math.round(s.text.length / 1000)} тыс. знаков</small></button>
+                <button className="ghost" onClick={() => del(s.id)} aria-label="Удалить рукопись">Удалить</button>
               </div>
             ))}
           </div>
@@ -153,61 +222,70 @@ export default function Table({ app, arg, toChapter }) {
     )
   }
 
+  const done = cur.phases.filter((p) => p.chosen)
   return (
-    <div className="col fill">
+    <div className="page wide">
       <div className="bar2">
-        <button className="ghost" disabled={busy} onClick={() => setSid(null)}>← Новые темы</button>
+        <button className="ghost" disabled={busy} onClick={() => setSid(null)}>← К рукописям</button>
         <b className="ttl">{cur.title}</b>
-        <button className="ghost" aria-pressed={fast} disabled={busy} onClick={() => setFast((f) => !f)} title="Все сразу быстрее, по очереди помощники отвечают друг другу">{fast ? '⚡ Все сразу' : '⛓ По очереди'}</button>
+        {busy && <button className="go" onClick={() => ctl.current?.abort()}>Стоп</button>}
       </div>
       {stage(true)}
-      <div className="table" ref={feed}>
-        {cur.turns.map((t, i) => {
-          if (t.kind === 'src') return <p key={i} className="muted srcnote">{t.text}</p>
-          const w = who(t.who)
-          const live = busy && !t.done && recent(i)
-          if (t.who === 'core') {
+      {!app.bibles[cur.bookId] && app.lib.length > 0 && <p className="empty-note">Книга ещё не изучена: писари знают её только по концу текста.</p>}
+
+      {(cur.text || done.length > 0) && (
+        <div className="blk">
+          <div className="row top">
+            <h3 className="grow">Рукопись <small className="muted">{Math.round(cur.text.length / 100) / 10} тыс. знаков</small></h3>
+            <button className="ghost sm" aria-expanded={showText} onClick={() => setShowText((v) => !v)}>{showText ? 'Свернуть' : 'Показать'}</button>
+          </div>
+          <ol className="path">
+            {done.map((p, k) => { const o = p.opts.find((x) => x.id === p.chosen), w = who(o?.by); return <li key={p.id} style={{ '--c': w.c }}><b>Фаза {k + 1}, {w.n}:</b> {o?.plot || cut(o?.text, 140)}</li> })}
+          </ol>
+          {showText && <textarea className="draft" rows={16} value={cur.text} disabled={busy} onChange={(e) => updS(cur.id, (x) => ({ ...x, text: e.target.value }))} aria-label="Рукопись" />}
+          <div className="row">
+            <button className="ghost" onClick={copy}>Копировать</button>
+            <button className="ghost" onClick={save}>Скачать .txt</button>
+            <button className="ghost" disabled={busy || !cur.text} onClick={toLib}>В библиотеку</button>
+          </div>
+          <p className="muted small">Текст создан с помощью ИИ. Если публикуете на Автор Тудей, проверьте правила площадки о маркировке таких текстов.</p>
+        </div>
+      )}
+
+      <div className="blk">
+        <div className="row top">
+          <h3 className="grow">Фаза {cur.phases.length}{ph.chosen ? <small className="ok"> выбрано</small> : ': выберите, как развивается сюжет'}</h3>
+          {ph.chosen && !busy && <button className="ghost sm" onClick={undo}>Отменить выбор</button>}
+        </div>
+        {ph.wish && <p className="muted brief">Пожелание: {ph.wish}</p>}
+        <div className="drafts">
+          {ph.opts.map((o) => {
+            const w = who(o.by), live = busy && !o.done, picked = ph.chosen === o.id
+            if (ph.chosen && !picked) return null
             return (
-              <article key={i} className={`echo-say ${t.kind}`}>
-                <div className="echo-line"><EchoWave level={live ? 2 : 0} /></div>
-                <h3>Эхо{t.kind === 'sum' ? ' · итог' : ''}{t.m && <small className="mdl">{short(t.m)}</small>}</h3>
-                <p>{t.text}{live && <span className="cur" />}</p>
-                {t.kind === 'sum' && !busy && t.text && <button className="ghost sm" onClick={() => toChapter({ brief: `${cur.turns.find((x) => x.kind === 'q')?.text || cur.title}\n\nИтог обсуждения: ${t.text}` })}>Взять в новую главу</button>}
+              <article key={o.id} className={`dr${live ? ' live' : ''}${picked ? ' picked' : ''}`} style={{ '--c': w.c }}>
+                <h4><Av w={w} size="sm" />{w.n}{o.m && <small className="mdl">{short(o.m)}</small>}</h4>
+                {o.plot && <p className="plot">{o.plot}</p>}
+                {o.err && !o.text ? <p className="err">{o.err}</p> : <div className="txt">{o.text || (live ? 'Пишет…' : '')}{live && <span className="cur" />}</div>}
+                {!busy && !ph.chosen && (
+                  <div className="row">
+                    {o.text && !o.err && <button className="go" onClick={() => choose(o)}>Выбрать этот вариант</button>}
+                    {(o.err || !o.text) && <button className="ghost sm" onClick={() => retry(o)}>Повторить</button>}
+                    {o.text && <small className="muted">{o.text.length} знаков</small>}
+                  </div>
+                )}
               </article>
             )
-          }
-          if (t.who === 'me') return <article key={i} className="turn me"><p>{t.text}</p></article>
-          return (
-            <article key={i} className={`turn${live ? ' live' : ''}`} style={{ '--c': w.c }}>
-              <div className="rail"><Av w={w} /></div>
-              <div className="body">
-              <h3>{w.n}{t.m && <small className="mdl">{short(t.m)}</small>}</h3>
-              <p>{t.text}{live && <span className="cur" />}</p>
-              {t.kind === 'adv' && !live && t.text && (
-                <div className="row fb">
-                  <button className="ghost sm" aria-pressed={t.fb === 1} disabled={!!t.fb} onClick={() => rate(i, 1)} title="Полезно: помощники запомнят, что вам такое нравится">👍</button>
-                  <button className="ghost sm" aria-pressed={t.fb === -1} disabled={!!t.fb} onClick={() => rate(i, -1)} title="Мимо: помощники запомнят, что так не надо">👎</button>
-                </div>
-              )}
-              </div>
-            </article>
-          )
-        })}
-      </div>
-      {err && <p className="err" role="alert">{err}</p>}
-      <div className="ask">
-        {busy ? (
-          <div className="row"><span className="say"><i />Сейчас говорит: {speaking === 'all' ? 'все сразу' : who(speaking)?.n}</span><button className="go" onClick={() => ctl.current?.abort()}>Стоп</button></div>
-        ) : (
-          <form onSubmit={ask} className="stack">
-            <details className="who-pick">
-              <summary>Участники: {pick.length} из {HELPERS.length}{app.lib.length > 0 && ` · книга: ${app.lib.find((d) => d.id === app.active)?.name || ''}`}</summary>
-              {books}
-              <Chips pick={pick} setPick={setPick} />
-            </details>
+          })}
+        </div>
+        {err && <p className="err" role="alert">{err}</p>}
+        {note && <p className="okmsg" role="status">{note}</p>}
+        {!busy && (
+          <form onSubmit={ph.chosen ? next : (e) => { e.preventDefault(); more() }} className="stack">
+            <textarea rows={2} value={wish} onChange={(e) => setWish(e.target.value)} placeholder={ph.chosen ? 'Пожелание к следующей фазе (можно пусто)…' : 'Ни один не подошёл? Уточните пожелание (можно пусто)…'} aria-label="Пожелание к фазе" />
             <div className="row">
-              <textarea rows={2} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ваш вопрос… например: «проверь главу 5»" aria-label="Следующий вопрос" onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) ask(e) }} />
-              <button className="go" disabled={!q.trim() || !pick.length}>Спросить</button>
+              {sizePick}
+              <button className={ph.chosen ? 'go' : 'ghost'}>{ph.chosen ? `Фаза ${cur.phases.length + 1}: писари пишут дальше` : 'Ещё 4 варианта'}</button>
             </div>
           </form>
         )}
